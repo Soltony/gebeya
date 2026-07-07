@@ -1,0 +1,92 @@
+import prisma from '@/lib/prisma';
+import { getSession } from '@/lib/session';
+
+export class MiniAppAuthError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function normalizeSuperAppToken(token: string) {
+  const trimmed = token.trim();
+  return trimmed.toLowerCase().startsWith('bearer ') ? trimmed.slice(7).trim() : trimmed;
+}
+
+export type MiniAppAuthContext = {
+  superAppToken: string;
+  borrowerId: string;
+  sessionUserId: string | null;
+};
+
+/**
+ * Whether the mini-app auth bypass is active (development only).
+ */
+export function isMiniAppBypassEnabled(): boolean {
+  return process.env.ALLOW_MINIAPP_BYPASS === 'true';
+}
+
+/**
+ * Resolves the current mini-app identity.
+ * - Requires presence of a super app token.
+ * - Derives the borrower (phone) for least-privilege checks.
+ * - When ALLOW_MINIAPP_BYPASS=true, returns a dev context without a real session.
+ */
+export async function requireMiniAppAuthContext(): Promise<MiniAppAuthContext> {
+  // --- Dev bypass: skip real session checks ---
+  if (isMiniAppBypassEnabled()) {
+    const devBorrowerId = process.env.DEV_BORROWER_ID || '251962206017';
+    return {
+      superAppToken: 'dev-bypass',
+      borrowerId: devBorrowerId,
+      sessionUserId: null,
+    };
+  }
+
+  const session = await getSession({ allowRefresh: false });
+  const rawToken = session?.superAppToken;
+
+  if (!rawToken) {
+    throw new MiniAppAuthError(401, 'Not authenticated');
+  }
+
+  const superAppToken = normalizeSuperAppToken(String(rawToken));
+  if (!superAppToken) {
+    throw new MiniAppAuthError(401, 'Not authenticated');
+  }
+
+  const sessionUserId = session?.userId ? String(session.userId) : null;
+
+  // We must be able to bind requests to a borrower to prevent IDOR.
+  // Legacy sessions store the phone as userId; DB sessions store a UUID -> map to phone.
+  let borrowerId: string | null = null;
+  if (sessionUserId) {
+    try {
+      const user = await prisma.user.findUnique({ where: { id: sessionUserId }, select: { phoneNumber: true } });
+      borrowerId = user?.phoneNumber ? String(user.phoneNumber) : sessionUserId;
+    } catch {
+      borrowerId = sessionUserId;
+    }
+  }
+
+  if (!borrowerId) {
+    throw new MiniAppAuthError(401, 'Not authenticated');
+  }
+
+  return { superAppToken, borrowerId, sessionUserId };
+}
+
+export function assertBorrowerMatches(requestedBorrowerId: string | null | undefined, ctx: MiniAppAuthContext) {
+  // Skip validation when running with dev bypass
+  if (isMiniAppBypassEnabled()) return;
+
+  if (!requestedBorrowerId) {
+    throw new MiniAppAuthError(400, 'borrowerId is required');
+  }
+
+  if (String(requestedBorrowerId) !== String(ctx.borrowerId)) {
+    throw new MiniAppAuthError(403, 'Forbidden');
+  }
+}
