@@ -11,9 +11,9 @@ import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { calculateTotalRepayable } from '@/lib/loan-calculator';
 import { RepaymentDialog } from '@/components/loan/repayment-dialog';
 import { useToast } from '@/hooks/use-toast';
+import { computeActiveInstallmentDue, computeLoanLevelDue } from '@/lib/repayment-due';
 
 const formatCurrency = (amount: number | null | undefined) => {
   if (amount === null || amount === undefined) return '0.00';
@@ -25,9 +25,10 @@ interface HistoryClientProps {
   initialLoanHistory: LoanDetails[];
   providers: LoanProvider[];
   taxConfigs: Tax[];
+  asOfDate: Date;
 }
 
-export function HistoryClient({ initialLoanHistory, providers, taxConfigs }: HistoryClientProps) {
+export function HistoryClient({ initialLoanHistory, providers, taxConfigs, asOfDate }: HistoryClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -89,24 +90,20 @@ export function HistoryClient({ initialLoanHistory, providers, taxConfigs }: His
 
 
   const handleRepay = (loan: LoanDetails) => {
-    // If the loan has an active installment, default to that installment amount (plus penalty)
-    const activeInstallment = Array.isArray(loan.installments) ? loan.installments.find(i => i.isActive) : undefined;
-    if (activeInstallment) {
-      // Include proportional service fee in the installment balance
-      const totalInstallments = Array.isArray(loan.installments) ? loan.installments.length : 1;
-      const serviceFeePerInstallment = (loan.serviceFee || 0) / totalInstallments;
-      const installBalance = Math.max(0,
-        (activeInstallment.amount - (activeInstallment.paidAmount || 0))
-        + serviceFeePerInstallment
-        + (activeInstallment.penaltyAmount || 0)
-      );
-      setRepayingLoanInfo({ loan, balanceDue: installBalance, installmentId: activeInstallment.id });
-      setIsRepayDialogOpen(true);
-      return;
+    // Same computation the dashboard and the server use, so every surface
+    // quotes the identical amount (fees already collected are never re-billed).
+    const installments = Array.isArray(loan.installments) ? loan.installments : [];
+    if (installments.length > 0) {
+      const due = computeActiveInstallmentDue(loan, loan.product, taxConfigs, installments, asOfDate);
+      if (due) {
+        setRepayingLoanInfo({ loan, balanceDue: due.total, installmentId: due.installmentId });
+        setIsRepayDialogOpen(true);
+        return;
+      }
     }
 
-    const balanceDue = (loan.totalRepayableAmount ?? 0) - (loan.repaidAmount || 0);
-    setRepayingLoanInfo({ loan, balanceDue: Math.max(0, balanceDue) });
+    const balanceDue = computeLoanLevelDue(loan, loan.product, taxConfigs, asOfDate);
+    setRepayingLoanInfo({ loan, balanceDue });
     setIsRepayDialogOpen(true);
   }
 
@@ -295,6 +292,7 @@ export function HistoryClient({ initialLoanHistory, providers, taxConfigs }: His
                 totalBalanceDue={repayingLoanInfo.balanceDue}
                 providerColor={providers.find(p => p.id === repayingLoanInfo.loan.product.providerId)?.colorHex}
                 taxConfigs={taxConfigs}
+                asOfDate={asOfDate}
             />
         )}
     </div>

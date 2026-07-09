@@ -6,6 +6,9 @@ import prisma from '@/lib/prisma';
 import { createAuditLog } from '@/lib/audit-log';
 import { getSession } from '@/lib/session';
 import { auditExternalApiRequest, auditExternalApiResponse, newAuditCorrelationId } from '@/lib/audit-log';
+import { getAsOfDate } from '@/lib/date-utils';
+import { ensureInstallmentRollover } from '@/lib/installment-rollover';
+import { computeActiveInstallmentDue, computeLoanLevelDue, MONEY_EPSILON } from '@/lib/repayment-due';
 
 export async function POST(req: NextRequest) {
     
@@ -43,20 +46,50 @@ export async function POST(req: NextRequest) {
         // --- Step 3: Fetch Loan Data ---
         const loan = await prisma.loan.findUnique({
             where: { id: loanId },
-            select: {
-                borrowerId: true,
+            include: {
                 product: {
-                    select: {
+                    include: {
                         provider: {
                             select: { accountNumber: true },
                         },
                     },
                 },
+                payments: { orderBy: { date: 'asc' } },
             },
         });
 
         if (!loan) {
             return NextResponse.json({ error: 'Loan not found.' }, { status: 404 });
+        }
+
+        // --- Step 3b: Validate amount against what is actually due ---
+        // Rejecting an overpaying intent here (instead of at the callback,
+        // after the gateway already moved money) is the only place the
+        // borrower can still be protected.
+        const asOfDate = getAsOfDate();
+        await ensureInstallmentRollover(prisma, loanId, asOfDate);
+        const installments = await prisma.loanInstallment.findMany({
+            where: { loanId },
+            orderBy: { installmentNumber: 'asc' },
+        });
+        const taxConfigs = await prisma.tax.findMany({ where: { status: 'ACTIVE' } });
+
+        const activeDue = installments.length > 0
+            ? computeActiveInstallmentDue(loan as any, loan.product as any, taxConfigs as any, installments as any, asOfDate)
+            : null;
+        const amountDue = activeDue
+            ? activeDue.total
+            : computeLoanLevelDue(loan as any, loan.product as any, taxConfigs as any, asOfDate);
+
+        const numericAmount = Number(amount);
+        if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+            return NextResponse.json({ error: 'Invalid payment amount.' }, { status: 400 });
+        }
+        if (numericAmount > amountDue + MONEY_EPSILON) {
+            return NextResponse.json(
+                { error: `Payment amount (${numericAmount}) exceeds the balance due (${amountDue.toFixed(2)}).` },
+                { status: 400 }
+            );
         }
 
         const ACCOUNT_NO = loan.product.provider.accountNumber;

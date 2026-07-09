@@ -1,0 +1,116 @@
+{
+  "info": {
+    "_postman_id": "7f3c9e1a-4b2d-4e8f-9a6c-2e7d5b1f8a03",
+    "name": "Gebeya BNPL — Repayment Data Fix (2026-07)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "One-off repayment data repair, run through the app because there is no direct SQL access to production.\n\nSETUP\n1. Set the collection variable `dataFixToken` to the value of the DATA_FIX_TOKEN env var configured on the production server (Collection → Variables).\n2. The new build (2026-07-07 code fix + middleware exemption) must be deployed first.\n\nRUN ORDER\n1. Fix — dry run → review the report\n2. Fix — COMMIT\n3. Reopen under-collected — COMMIT\n4. (after both borrowers repaid in the app) Reclass shortfalls — COMMIT\n5. Remove DATA_FIX_TOKEN from the server env to disable the endpoint\n\nRESPONSE MEANINGS\n- {\"error\":\"Not authenticated\"} → old build still deployed (middleware exemption missing)\n- {\"error\":\"Not found\"} → new build, but DATA_FIX_TOKEN env var not set on the server\n- {\"error\":\"Forbidden\"} → token in header does not match the server env var\n- JSON report → success\n\nAll actions are idempotent: re-running reports zeros / 'already applied' instead of double-applying."
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://nibteragebeyabnpl.nibbank.com.et" },
+    { "key": "dataFixToken", "value": "PASTE_DATA_FIX_TOKEN_HERE" }
+  ],
+  "item": [
+    {
+      "name": "1. Fix — dry run",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"fix\"\n}" },
+        "description": "Runs the full repair inside a transaction and ROLLS IT BACK, returning the report of what WOULD change: dust installments closed, merged-with-payments rows restored, double-counted successors deflated, active flags normalized, stale intents expired, ledger reclasses.\n\nOn the untouched production DB expect roughly: dust 2, restored 55, deflated 4, deactivated 1, activated 2, expired ~243, ledger reclasses 2. `remainingDisagreements` should list exactly 3 loans (1 refund, 2 shortfalls)."
+      }
+    },
+    {
+      "name": "2. Fix — COMMIT",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"fix\",\n  \"commit\": true\n}" },
+        "description": "Applies the repair permanently. Only send after reviewing the dry-run report. Safe to re-run: a second call reports zeros / 'already applied'."
+      }
+    },
+    {
+      "name": "3. Reopen under-collected — dry run",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"reopen-under-collected\"\n}" },
+        "description": "Shows what the reopen would do. Expect: cmnu7pzsz0553jg63irz6qkp3 outstanding 485.86 and cmnu88szm05dmjg635fu723zg outstanding 934.37, action 'would reopen (dry run)'."
+      }
+    },
+    {
+      "name": "4. Reopen under-collected — COMMIT",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"reopen-under-collected\",\n  \"commit\": true\n}" },
+        "description": "Sets the two under-collected loans back to Unpaid so borrowers 251911144369 (485.86) and 251913570635 (934.37) can pay the missing fee share in the SuperApp. The loans close themselves once the money covers the total. Consider notifying the borrowers first — the app previously told them 'Paid'."
+      }
+    },
+    {
+      "name": "5. Reclass shortfalls — dry run",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"reclass-shortfalls\"\n}" },
+        "description": "Refuses ('shortfall not collected yet') until both reopened loans are Paid again. Run after the borrowers have repaid."
+      }
+    },
+    {
+      "name": "6. Reclass shortfalls — COMMIT",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-data-fix-token", "value": "{{dataFixToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/data-fixes/repayment",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "data-fixes", "repayment"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"action\": \"reclass-shortfalls\",\n  \"commit\": true\n}" },
+        "description": "Books the collected shortfalls as service-fee income instead of principal (5 correcting ledger entries per loan). Only acts on loans that are Paid again; never applies twice."
+      }
+    }
+  ]
+}

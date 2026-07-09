@@ -10,6 +10,8 @@ import sendSms from '@/lib/sms';
 import { MiniAppAuthError, requireMiniAppAuthContext } from '@/lib/miniapp-auth';
 import { getAsOfDate } from '@/lib/date-utils';
 import { ensureInstallmentRollover } from '@/lib/installment-rollover';
+import { computeActiveInstallmentDue, MONEY_EPSILON, LOAN_SETTLE_EPSILON } from '@/lib/repayment-due';
+import { INSTALLMENT_STATUS, SETTLED_STATUSES } from '@/lib/installment-status';
 
 const paymentSchema = z.object({
     loanId: z.string(),
@@ -40,7 +42,7 @@ export async function POST(req: NextRequest) {
         const [loan, taxConfigs] = await Promise.all([
             prisma.loan.findUnique({
                 where: { id: loanId },
-                include: { 
+                include: {
                     product: {
                         include: {
                             provider: {
@@ -49,7 +51,10 @@ export async function POST(req: NextRequest) {
                                 }
                             }
                         }
-                    }
+                    },
+                    // Interest is computed on the declining balance, so the
+                    // calculator needs the payment history.
+                    payments: { orderBy: { date: 'asc' } }
                 }
             }),
             prisma.tax.findMany({ where: { status: 'ACTIVE' } })
@@ -91,62 +96,39 @@ export async function POST(req: NextRequest) {
 
         // If installmentId is provided, handle installment-level payment
         if (body.installmentId) {
-            const installment = await prisma.loanInstallment.findUnique({ where: { id: body.installmentId }, include: { loan: { include: { product: { include: { provider: { include: { ledgerAccounts: true } } } } } } } });
-            if (!installment) throw new Error('Installment not found');
-            if (String(installment.loanId) !== String(loanId)) throw new Error('Installment does not belong to loan');
-
-            // Enforce sequential schedule: borrower can only pay the currently active installment.
-            // (After one installment is fully repaid, the next becomes active.)
-            if (!installment.isActive) {
-                throw new Error('This installment is not active yet. Please repay the active installment first.');
-            }
-
-            // compute penalty for this installment using product.penaltyRules (safe-parse)
-            const safeParse = (field: any, defaultValue: any) => {
-                if (typeof field === 'string') {
-                    try { return JSON.parse(field); } catch (e) { return defaultValue; }
-                }
-                return field ?? defaultValue;
-            };
-
-            const product = installment.loan.product as any;
-            const penaltyRules = safeParse(product.penaltyRules, []);
-            const daysOverdue = Math.max(0, differenceInDays(paymentDate, installment.dueDate));
-            let penaltyForInstallment = 0;
-            (penaltyRules || []).forEach((rule: any) => {
-                const fromDay = rule.fromDay === '' ? 1 : Number(rule.fromDay);
-                const toDayRaw = rule.toDay === '' || rule.toDay === null ? Infinity : Number(rule.toDay);
-                const toDay = isNaN(toDayRaw) ? Infinity : toDayRaw;
-                const value = rule.value === '' ? 0 : Number(rule.value);
-
-                if (daysOverdue >= fromDay) {
-                    const applicableDaysInTier = Math.min(daysOverdue, toDay) - fromDay + 1;
-                    const isOneTime = rule.frequency === 'one-time';
-                    const daysToCalculate = isOneTime ? 1 : applicableDaysInTier;
-
-                    if (rule.type === 'fixed') {
-                        penaltyForInstallment += value * daysToCalculate;
-                    } else if (rule.type === 'percentageOfPrincipal') {
-                        penaltyForInstallment += installment.amount * (value / 100) * daysToCalculate;
-                    } else if (rule.type === 'percentageOfCompound') {
-                        penaltyForInstallment += installment.amount * (value / 100) * daysToCalculate;
-                    }
-                }
+            const installments = await prisma.loanInstallment.findMany({
+                where: { loanId },
+                orderBy: { installmentNumber: 'asc' },
             });
 
-            // Loan-level due buckets (service fee / interest / tax) are still payable during installment repayment.
-            // Only installment-level penalty + principal count toward installment.paidAmount.
-            const penaltyPaidSoFar = Math.min((installment.paidAmount || 0), penaltyForInstallment);
-            const penaltyRemaining = Math.max(0, penaltyForInstallment - penaltyPaidSoFar);
-            const principalPaidSoFar = Math.max(0, (installment.paidAmount || 0) - penaltyPaidSoFar);
-            const principalRemaining = Math.max(0, installment.amount - principalPaidSoFar);
+            // Single source of truth for the amount due (fees are billed by
+            // entitlement, never re-billed on repeat payments — see repayment-due.ts).
+            const due = computeActiveInstallmentDue(
+                loan as any,
+                loan.product as any,
+                (taxConfigs ?? []) as any,
+                installments as any,
+                paymentDate
+            );
+            if (!due) throw new Error('No active installment found for this loan.');
 
-            const totalDueForInstallment =
-                principalRemaining +
-                penaltyRemaining +
-                serviceFeeDue +
-                interestDue +
-                taxDue;
+            // Enforce sequential schedule: borrower can only pay the currently active installment.
+            if (String(due.installmentId) !== String(body.installmentId)) {
+                throw new Error('This installment is not active yet. Please repay the active installment first.');
+            }
+            const installment = installments.find(i => i.id === due.installmentId)!;
+
+            const penaltyForInstallment = due.penaltyForInstallment;
+            const instPenaltyRemaining = due.penaltyRemaining;
+            const instServiceFeeDue = due.serviceFeeDue;
+            const instInterestDue = due.interestDue;
+            const instTaxDue = due.taxDue;
+            const instPrincipalRemaining = due.principalRemaining;
+            const totalDueForInstallment = due.total;
+
+            if (paymentAmount > totalDueForInstallment + MONEY_EPSILON) {
+                throw new Error('Payment amount exceeds balance due.');
+            }
 
             // proceed with transaction similar to loan-level payment but scoped to installment
             const result = await prisma.$transaction(async (tx) => {
@@ -171,7 +153,7 @@ export async function POST(req: NextRequest) {
                 let amountToApply = paymentAmount;
 
                 // apply penalty first
-                const penaltyToPay = Math.min(amountToApply, penaltyRemaining);
+                const penaltyToPay = Math.min(amountToApply, instPenaltyRemaining);
                 if (penaltyToPay > 0 && penaltyReceivable && penaltyReceived) {
                     await tx.ledgerAccount.update({ where: { id: penaltyReceivable.id }, data: { balance: { decrement: penaltyToPay } } });
                     await tx.ledgerAccount.update({ where: { id: penaltyReceived.id }, data: { balance: { increment: penaltyToPay } } });
@@ -185,8 +167,8 @@ export async function POST(req: NextRequest) {
                     amountToApply -= penaltyToPay;
                 }
 
-                // loan-level service fee
-                const serviceFeeToPay = Math.min(amountToApply, serviceFeeDue);
+                // service fee share owed with this installment
+                const serviceFeeToPay = Math.min(amountToApply, instServiceFeeDue);
                 if (serviceFeeToPay > 0) {
                     if (!serviceFeeReceivable || !serviceFeeReceived || !serviceFeeIncome) throw new Error('Service Fee ledger accounts not configured');
                     await tx.ledgerAccount.update({ where: { id: serviceFeeReceivable.id }, data: { balance: { decrement: serviceFeeToPay } } });
@@ -202,8 +184,8 @@ export async function POST(req: NextRequest) {
                     amountToApply -= serviceFeeToPay;
                 }
 
-                // loan-level interest
-                const interestToPay = Math.min(amountToApply, interestDue);
+                // interest share owed with this installment
+                const interestToPay = Math.min(amountToApply, instInterestDue);
                 if (interestToPay > 0) {
                     if (!interestReceivable || !interestReceived || !interestIncome) throw new Error('Interest ledger accounts not configured');
                     await tx.ledgerAccount.update({ where: { id: interestReceivable.id }, data: { balance: { decrement: interestToPay } } });
@@ -219,8 +201,8 @@ export async function POST(req: NextRequest) {
                     amountToApply -= interestToPay;
                 }
 
-                // loan-level tax
-                const taxToPay = Math.min(amountToApply, taxDue);
+                // tax share owed with this installment
+                const taxToPay = Math.min(amountToApply, instTaxDue);
                 if (taxToPay > 0) {
                     if (!taxReceivable || !taxReceived) throw new Error('Tax ledger accounts not configured');
                     await tx.ledgerAccount.update({ where: { id: taxReceivable.id }, data: { balance: { decrement: taxToPay } } });
@@ -234,7 +216,7 @@ export async function POST(req: NextRequest) {
                     amountToApply -= taxToPay;
                 }
 
-                const principalToPay = Math.min(amountToApply, principalRemaining);
+                const principalToPay = Math.min(amountToApply, instPrincipalRemaining);
                 if (principalToPay > 0) {
                     await tx.ledgerAccount.update({ where: { id: principalReceivable.id }, data: { balance: { decrement: principalToPay } } });
                     await tx.ledgerAccount.update({ where: { id: principalReceived.id }, data: { balance: { increment: principalToPay } } });
@@ -247,9 +229,15 @@ export async function POST(req: NextRequest) {
 
                 const paymentRec = await tx.payment.create({ data: { loanId, installmentId: installment.id, amount: paymentAmount, date: paymentDate, outstandingBalanceBeforePayment: totalDueForInstallment, journalEntryId: journalEntry.id } });
 
-                // Only penalty+principal settle an installment.
-                const newPaidAmount = (installment.paidAmount || 0) + penaltyToPay + principalToPay;
-                const isFullyPaid = newPaidAmount >= installment.amount + penaltyForInstallment - 1e-9;
+                // Only penalty+principal settle an installment. Settled when at
+                // most rounding dust (< 1 cent) remains; on settlement, snap
+                // paidAmount to the exact amount owed so no dust survives.
+                const isFullyPaid =
+                    instPrincipalRemaining - principalToPay <= MONEY_EPSILON &&
+                    instPenaltyRemaining - penaltyToPay <= MONEY_EPSILON;
+                const newPaidAmount = isFullyPaid
+                    ? installment.amount + penaltyForInstallment
+                    : (installment.paidAmount || 0) + penaltyToPay + principalToPay;
 
                 // Keep current installment active until it is fully paid.
                 await tx.loanInstallment.update({
@@ -257,7 +245,9 @@ export async function POST(req: NextRequest) {
                     data: {
                         paidAmount: newPaidAmount,
                         paidAt: paymentDate,
-                        status: isFullyPaid ? 'Paid' : (differenceInDays(paymentDate, installment.dueDate) > 0 ? 'Overdue' : 'Pending'),
+                        status: isFullyPaid
+                            ? INSTALLMENT_STATUS.Paid
+                            : (differenceInDays(paymentDate, installment.dueDate) > 0 ? INSTALLMENT_STATUS.Overdue : INSTALLMENT_STATUS.Pending),
                         penaltyAmount: penaltyForInstallment,
                         isActive: !isFullyPaid,
                     }
@@ -268,12 +258,12 @@ export async function POST(req: NextRequest) {
 
                 if (isFullyPaid) {
                     // Activate the next payable installment.
-                    // (Merged installments have amount=0 and status='Merged' and must be skipped.)
+                    // (Merged installments have amount=0 and must be skipped.)
                     const nextPayable = await tx.loanInstallment.findFirst({
                         where: {
                             loanId,
                             installmentNumber: { gt: installment.installmentNumber },
-                            status: { notIn: ['Merged', 'Paid'] },
+                            status: { notIn: SETTLED_STATUSES },
                             amount: { gt: 0 },
                         },
                         orderBy: { installmentNumber: 'asc' },
@@ -282,7 +272,16 @@ export async function POST(req: NextRequest) {
                     if (nextPayable) {
                         await tx.loanInstallment.update({ where: { id: nextPayable.id }, data: { isActive: true } });
                     } else {
-                        await tx.loan.update({ where: { id: loanId }, data: { repaymentStatus: 'Paid' } });
+                        // Last installment settled — only mark the LOAN paid when
+                        // the money received covers the total repayable.
+                        const newRepaidTotal = (loan.repaidAmount || 0) + paymentAmount;
+                        if (newRepaidTotal >= totals.total - LOAN_SETTLE_EPSILON) {
+                            await tx.loan.update({ where: { id: loanId }, data: { repaymentStatus: 'Paid' } });
+                        } else {
+                            console.error('[payments] all installments settled but loan under-collected; leaving Unpaid', {
+                                loanId, repaid: newRepaidTotal, expected: totals.total,
+                            });
+                        }
                     }
                 }
 
@@ -293,8 +292,8 @@ export async function POST(req: NextRequest) {
         }
 
 
-           if (paymentAmount > totalDue + 1e-9) { // Add machine epsilon for float comparison
-             throw new Error('Payment amount exceeds balance due.');
+        if (paymentAmount > totalDue + MONEY_EPSILON) {
+            throw new Error('Payment amount exceeds balance due.');
         }
         
         const updatedLoan = await prisma.$transaction(async (tx) => {
@@ -408,7 +407,7 @@ export async function POST(req: NextRequest) {
             });
 
             const newRepaidAmount = alreadyRepaid + paymentAmount;
-            const isFullyPaid = newRepaidAmount >= total;
+            const isFullyPaid = newRepaidAmount >= totals.total - LOAN_SETTLE_EPSILON;
             let repaymentBehavior: RepaymentBehavior | null = null;
             
             if (isFullyPaid) {

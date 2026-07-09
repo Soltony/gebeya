@@ -9,9 +9,9 @@ import type { LoanProduct, LoanDetails, FeeRule, Tax, PenaltyRule } from '@/lib/
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
-import { calculateTotalRepayableDetailed } from '@/lib/loan-calculator';
 import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from '../ui/tooltip';
-import { calculateInstallmentPenalty } from '@/lib/installment-penalty';
+import { computeActiveInstallmentDue, computeLoanLevelDue } from '@/lib/repayment-due';
+import { isMergedStatus, isSettledStatus } from '@/lib/installment-status';
 
 const formatCurrency = (amount: number | null | undefined) => {
     if (amount === null || amount === undefined || isNaN(amount)) return '0.00';
@@ -98,68 +98,25 @@ export function ProductCard({
 }: ProductCardProps) {
     const [isExpanded, setIsExpanded] = useState(false);
     
-    const activeInstallment = activeLoan && Array.isArray((activeLoan as any).installments) ? (activeLoan as any).installments.find((i: any) => i.isActive) : undefined;
+    const activeInstallment = activeLoan && Array.isArray((activeLoan as any).installments)
+        ? (activeLoan as any).installments.find((i: any) => i.isActive && !isSettledStatus(i.status))
+        : undefined;
     const mergedNextInstallment = activeLoan && activeInstallment && Array.isArray((activeLoan as any).installments)
-        ? (activeLoan as any).installments.find((i: any) => i && i.status === 'Merged' && i.installmentNumber === activeInstallment.installmentNumber + 1)
+        ? (activeLoan as any).installments.find((i: any) => i && isMergedStatus(i.status) && i.installmentNumber === activeInstallment.installmentNumber + 1)
         : undefined;
     const isOverdue = activeInstallment ? asOfDate > new Date(activeInstallment.dueDate) : (activeLoan ? asOfDate > new Date(activeLoan.dueDate) : false);
 
+    // Same computation the server uses to accept/reject the payment, so the
+    // quoted amount can neither over- nor under-shoot what the API allows.
     const balanceDue = useMemo(() => {
         if (!activeLoan) return 0;
-        
-        // Calculate total repayable using asOfDate with detailed breakdown
-        const totals = calculateTotalRepayableDetailed(activeLoan, activeLoan.product, taxConfigs, asOfDate);
-        
-        // For installment-based loans, only show the CURRENT installment amount due
-        if (Array.isArray((activeLoan as any).installments) && (activeLoan as any).installments.length > 0) {
-            const installments = (activeLoan as any).installments;
-            const activeInst = installments.find((i: any) => i.isActive);
-            if (activeInst) {
-                // Get installment principal amount remaining
-                const instPrincipalOutstanding = Math.max(0, (activeInst.amount || 0) - (activeInst.paidAmount || 0));
-                
-                // Calculate penalty on FULL remaining loan principal (after principal payments)
-                const fullPrincipalOutstanding = Math.max(0, activeLoan.loanAmount - totals.principalPaidFromInterestCalc);
-                const penaltyRules = product.penaltyRules || [];
-                const penaltyPerInstallment = (product as any).penaltyPerInstallment ?? false;
-                
-                // If penaltyPerInstallment is ON, use installment due date
-                // If penaltyPerInstallment is OFF, use loan due date
-                const penaltyDueDate = penaltyPerInstallment 
-                    ? new Date(activeInst.dueDate) 
-                    : new Date(activeLoan.dueDate);
-                    
-                const installmentPenalty = calculateInstallmentPenalty({
-                    dueDate: penaltyDueDate,
-                    principalOutstanding: fullPrincipalOutstanding,
-                    penaltyRules,
-                    asOfDate: asOfDate,
-                });
-                
-                // Each installment pays an equal share of service fee, interest, and tax.
-                // We use a simple per-installment split rather than cumulative tracking
-                // because serviceFeePaid/interestPaid from the calculator are unreliable
-                // when daily fees are disabled (they stay 0).
-                const totalInstallments = installments.length || 1;
-                const serviceFeeDue = Math.max(0, totals.serviceFee / totalInstallments);
-                const interestDue = Math.max(0, totals.interest / totalInstallments);
-                const taxDue = Math.max(0, totals.tax / totalInstallments);
-                
-                // Penalty remaining
-                const penaltyDue = Math.max(0, installmentPenalty);
-                
-                // Total due: installment principal + remaining interest + remaining penalty + service fee (if 1st) + tax
-                const installmentTotal = instPrincipalOutstanding + serviceFeeDue + interestDue + taxDue + penaltyDue;
-                
-                return Math.max(0, Math.round(installmentTotal * 100) / 100);
-            }
+        const installments = Array.isArray((activeLoan as any).installments) ? (activeLoan as any).installments : [];
+        if (installments.length > 0) {
+            const due = computeActiveInstallmentDue(activeLoan, activeLoan.product, taxConfigs, installments, asOfDate);
+            if (due) return due.total;
         }
-        
-        // For non-installment loans, use accurate paid amounts from detailed calculation
-        const alreadyRepaid = activeLoan.repaidAmount || 0;
-        const remainingBalance = totals.total - alreadyRepaid;
-        return Math.max(0, remainingBalance);
-    }, [activeLoan, taxConfigs, asOfDate, product.penaltyRules]);
+        return computeLoanLevelDue(activeLoan, activeLoan.product, taxConfigs, asOfDate);
+    }, [activeLoan, taxConfigs, asOfDate]);
 
     const trueAvailableLimit = useMemo(() => {
         // The available limit for this specific product is the smaller of the product's general

@@ -65,6 +65,12 @@ const protectedAdminRoutes = [
   '/api/settings', '/api/providers', '/api/users', '/api/reports',
   '/api/merchants', '/api/branches', '/api/inventory'
 ];
+
+// Routes that enforce their own authentication instead of the admin browser
+// session, so operators can call them with curl/Postman. The data-fix route
+// requires the DATA_FIX_TOKEN env var + x-data-fix-token header (timing-safe
+// compare) and returns 404 when the env var is not configured.
+const selfAuthenticatedAdminRoutes = ['/api/admin/data-fixes/'];
 const publicRoutes = ['/admin/login', '/loan/connect', '/admin/change-password'];
 
 const protectedMiniAppRoutes = ['/loan', '/dashboard', '/history', '/bnpl'];
@@ -204,7 +210,8 @@ export default async function middleware(req: NextRequest) {
   // START ACCESS CONTROL ENFORCEMENT
   // ----------------------------------------
 
-  const isProtected = protectedAdminRoutes.some(prefix => path.startsWith(prefix));
+  const isSelfAuthenticated = selfAuthenticatedAdminRoutes.some(prefix => path.startsWith(prefix));
+  const isProtected = !isSelfAuthenticated && protectedAdminRoutes.some(prefix => path.startsWith(prefix));
 
   if (isProtected && !publicRoutes.includes(path)) {
     const cookieHeader = req.headers.get('cookie') || '';

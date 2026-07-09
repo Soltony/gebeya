@@ -1,22 +1,28 @@
 import { PrismaClient } from "@prisma/client";
 import { startOfDay } from "date-fns";
 import { getAsOfDate } from "./date-utils";
+import { INSTALLMENT_STATUS, isPaidStatus, isSettledStatus } from "./installment-status";
+import { MONEY_EPSILON } from "./repayment-due";
 
 /**
  * Overdue Installment Merging Logic
  *
  * When an installment's due date passes and it is unpaid, the system should:
  * 1. Clear (close) the overdue installment (set status to 'Merged', amount to 0)
- * 2. Merge its amount into the next installment
+ * 2. Merge its UNPAID REMAINDER into the next installment
  * 3. Make the next installment the active installment
  *
  * This process repeats sequentially for any number of installments (n).
  *
- * Example:
- * - Installment 1 (3333.33) is overdue -> Close it, merge into Installment 2
- * - Installment 2 now has 6666.66 and becomes active
- * - If Installment 2 also becomes overdue -> Close it, merge into Installment 3
- * - Installment 3 now has 10000 (full loan amount) and becomes active
+ * Correctness rules (each guards against a production incident):
+ * - Status comparisons are case-insensitive: the DB holds 'Paid'/'Merged'
+ *   while older code compared against 'PAID'/'MERGED' and consequently
+ *   merged away installments that were already paid.
+ * - An overdue installment whose principal is covered (within MONEY_EPSILON)
+ *   is marked Paid, never Merged — rounding dust must not roll forward.
+ * - The close-and-merge pair is guarded by a conditional update on the
+ *   current row's amount+status: two concurrent page loads used to both
+ *   apply the merge, double-billing the successor.
  *
  * IMPORTANT: This only affects installment status/amount tracking.
  * Loan-level interest (daily fee) calculation is NOT modified.
@@ -28,6 +34,10 @@ export interface RolloverResult {
   activeInstallmentId: string | null;
 }
 
+type PrismaLike =
+  | PrismaClient
+  | Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
 /**
  * Ensures overdue installments are rolled over (merged) into the next installment.
  *
@@ -37,16 +47,13 @@ export interface RolloverResult {
  * @returns RolloverResult with information about what was updated
  */
 export async function ensureInstallmentRollover(
-  prisma:
-    | PrismaClient
-    | Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0],
+  prisma: PrismaLike,
   loanId: string,
   asOfDate?: Date
 ): Promise<RolloverResult> {
   const rawAsOfDate = asOfDate ?? getAsOfDate();
   const today = startOfDay(rawAsOfDate);
 
-  // Fetch all installments for this loan, ordered by installment number
   const installments = await (prisma as any).loanInstallment.findMany({
     where: { loanId },
     orderBy: { installmentNumber: "asc" },
@@ -56,125 +63,125 @@ export async function ensureInstallmentRollover(
     return { updated: false, mergedCount: 0, activeInstallmentId: null };
   }
 
-  const updates: Promise<any>[] = [];
   let mergedCount = 0;
+  let updated = false;
 
-  // Process installments sequentially from first to second-to-last
-  // We iterate forward: if installment[i] is overdue, close it and merge into installment[i+1]
   for (let i = 0; i < installments.length - 1; i++) {
     const current = installments[i];
     const next = installments[i + 1];
     const currentDueDate = startOfDay(new Date(current.dueDate));
 
-    // Check if current installment is overdue and unpaid
-    // An installment is eligible for rollover if:
-    // - It's not already Paid
-    // - It's not already MERGED (already processed)
-    // - Its due date is before today
-    // - It has an amount > 0 (something to merge)
-    const isOverdue = currentDueDate < today;
-    const isUnpaid = current.status !== "PAID";
-    const notMerged = current.status !== "MERGED";
-    const hasAmount = (current.amount || 0) > 0;
+    if (!(currentDueDate < today)) continue;
+    if (isSettledStatus(current.status)) continue;
+    if ((current.amount || 0) <= 0) continue;
 
-    if (isOverdue && isUnpaid && notMerged && hasAmount) {
-      // Check that the next installment hasn't been paid or merged already
-      if (next.status === "PAID") {
-        // Next installment is already paid, can't merge into it
-        // Just mark current as active if not already
-        if (!current.isActive) {
-          updates.push(
-            (prisma as any).loanInstallment.update({
-              where: { id: current.id },
-              data: { isActive: true },
-            })
-          );
-        }
-        continue;
+    const paidAmount = current.paidAmount || 0;
+    const remainingAmount = Math.max(0, (current.amount || 0) - paidAmount);
+
+    // Fully covered (or only rounding dust left): close as Paid, do not merge.
+    if (remainingAmount <= MONEY_EPSILON) {
+      const res = await (prisma as any).loanInstallment.updateMany({
+        where: { id: current.id, status: current.status },
+        data: {
+          status: INSTALLMENT_STATUS.Paid,
+          paidAmount: current.amount,
+          isActive: false,
+          paidAt: current.paidAt ?? today,
+        },
+      });
+      if (res.count === 1) {
+        current.status = INSTALLMENT_STATUS.Paid;
+        current.isActive = false;
+        updated = true;
       }
-
-      // Close the current overdue installment
-      updates.push(
-        (prisma as any).loanInstallment.update({
-          where: { id: current.id },
-          data: {
-            status: "MERGED",
-            isActive: false,
-            // Keep the original amount for audit purposes, or set to 0 if preferred
-            // Setting to 0 as per the requirement "clear the overdue installment"
-            amount: 0,
-          },
-        })
-      );
-
-      // Calculate the remaining unpaid amount for partial payment scenarios
-      // Only the unpaid portion should be merged into the next installment
-      const paidAmount = current.paidAmount || 0;
-      const remainingAmount = Math.max(0, (current.amount || 0) - paidAmount);
-
-      // Merge the remaining unpaid amount and penalty into the next installment
-      // Also update in-memory to handle cascading rollovers in the same loop
-      const mergedAmount = remainingAmount + (next.amount || 0);
-      const mergedPenalty =
-        (current.penaltyAmount || 0) + (next.penaltyAmount || 0);
-
-      updates.push(
-        (prisma as any).loanInstallment.update({
-          where: { id: next.id },
-          data: {
-            amount: mergedAmount,
-            penaltyAmount: mergedPenalty,
-            isActive: true,
-          },
-        })
-      );
-
-      // Update in-memory values for cascading effect
-      // This ensures if next also becomes overdue, the loop handles it correctly
-      next.amount = mergedAmount;
-      next.penaltyAmount = mergedPenalty;
-      next.isActive = true;
-
-      // Clear current's in-memory values
-      current.amount = 0;
-      current.status = "MERGED";
-      current.isActive = false;
-
-      mergedCount++;
+      continue;
     }
+
+    // Next installment already paid: nothing to merge into; keep current active.
+    if (isPaidStatus(next.status)) {
+      if (!current.isActive) {
+        await (prisma as any).loanInstallment.update({
+          where: { id: current.id },
+          data: { isActive: true },
+        });
+        current.isActive = true;
+        updated = true;
+      }
+      continue;
+    }
+
+    // Close the overdue installment. The conditional `amount` match makes the
+    // merge idempotent under concurrency: a racing rollover that already
+    // closed this row (amount -> 0) causes count === 0 and we skip the
+    // successor update instead of double-billing it.
+    const closed = await (prisma as any).loanInstallment.updateMany({
+      where: {
+        id: current.id,
+        amount: current.amount,
+        status: { notIn: [INSTALLMENT_STATUS.Paid, INSTALLMENT_STATUS.Merged] },
+      },
+      data: {
+        status: INSTALLMENT_STATUS.Merged,
+        isActive: false,
+        amount: 0,
+      },
+    });
+
+    if (closed.count !== 1) continue;
+
+    // Merge only the unpaid remainder (and accrued penalty) into the successor.
+    const mergedAmount = remainingAmount + (next.amount || 0);
+    const mergedPenalty = (current.penaltyAmount || 0) + (next.penaltyAmount || 0);
+
+    await (prisma as any).loanInstallment.update({
+      where: { id: next.id },
+      data: {
+        amount: mergedAmount,
+        penaltyAmount: mergedPenalty,
+        isActive: true,
+      },
+    });
+
+    // Update in-memory values so a cascading rollover in the same loop sees
+    // the merged state.
+    next.amount = mergedAmount;
+    next.penaltyAmount = mergedPenalty;
+    next.isActive = true;
+    current.amount = 0;
+    current.status = INSTALLMENT_STATUS.Merged;
+    current.isActive = false;
+
+    mergedCount++;
+    updated = true;
   }
 
-  // Execute all updates
-  if (updates.length > 0) {
-    await Promise.all(updates);
-  }
-
-  // Find the active installment after rollover
-  // Re-check the in-memory state to find active
+  // Find the active installment after rollover from the in-memory state.
   const activeInstallment = installments.find(
-    (i: any) => i.isActive && i.status !== "PAID" && i.status !== "MERGED"
+    (i: any) => i.isActive && !isSettledStatus(i.status)
   );
 
-  // If no active installment found (e.g., all merged), set the last non-paid installment as active
+  // If no active installment found (e.g. all earlier ones merged), activate
+  // the first open installment.
   if (!activeInstallment) {
-    const lastUnpaid = [...installments]
-      .reverse()
-      .find((i: any) => i.status !== "PAID" && i.status !== "MERGED");
-    if (lastUnpaid && !lastUnpaid.isActive) {
+    const firstOpen = installments.find(
+      (i: any) => !isSettledStatus(i.status) && (i.amount || 0) > 0
+    );
+    if (firstOpen && !firstOpen.isActive) {
       await (prisma as any).loanInstallment.update({
-        where: { id: lastUnpaid.id },
+        where: { id: firstOpen.id },
         data: { isActive: true },
       });
       return {
-        updated: updates.length > 0 || true,
+        updated: true,
         mergedCount,
-        activeInstallmentId: lastUnpaid.id,
+        activeInstallmentId: firstOpen.id,
       };
     }
+    return { updated, mergedCount, activeInstallmentId: firstOpen?.id ?? null };
   }
 
   return {
-    updated: updates.length > 0,
+    updated,
     mergedCount,
     activeInstallmentId: activeInstallment?.id ?? null,
   };

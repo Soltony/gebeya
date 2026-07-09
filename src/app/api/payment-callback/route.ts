@@ -1,68 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import {
-  calculateTotalRepayable,
-  calculateTotalRepayableDetailed,
-} from "@/lib/loan-calculator";
-import { startOfDay, isBefore, isEqual } from "date-fns";
+import { calculateTotalRepayable } from "@/lib/loan-calculator";
+import { startOfDay, isBefore, isEqual, differenceInDays } from "date-fns";
 import { getAsOfDate } from "@/lib/date-utils";
 import { ensureInstallmentRollover } from "@/lib/installment-rollover";
 import { createAuditLog } from "@/lib/audit-log";
+import {
+  computeActiveInstallmentDue,
+  MONEY_EPSILON,
+  LOAN_SETTLE_EPSILON,
+} from "@/lib/repayment-due";
+import { INSTALLMENT_STATUS, SETTLED_STATUSES } from "@/lib/installment-status";
 
 // Local alias for repayment behavior values used in the code
 type RepaymentBehavior = "EARLY" | "ON_TIME" | "LATE";
 
-const safeJsonParse = (value: any, defaultValue: any) => {
-  if (value == null) return defaultValue;
-  if (typeof value === "string") {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return defaultValue;
-    }
-  }
-  return value;
-};
-
-const calculatePenaltyForInstallment = (
-  installmentAmount: number,
-  dueDate: Date,
-  penaltyRules: any[],
-  asOfDate: Date
-) => {
-  const daysOverdue = Math.max(
-    0,
-    Math.floor(
-      (startOfDay(asOfDate).getTime() - startOfDay(dueDate).getTime()) /
-        (24 * 60 * 60 * 1000)
-    )
-  );
-  let penalty = 0;
-  (penaltyRules || []).forEach((rule: any) => {
-    const fromDay = rule.fromDay === "" ? 1 : Number(rule.fromDay);
-    const toDayRaw =
-      rule.toDay === "" || rule.toDay == null ? Infinity : Number(rule.toDay);
-    const toDay = Number.isFinite(toDayRaw) ? toDayRaw : Infinity;
-    const value = rule.value === "" ? 0 : Number(rule.value);
-    if (!Number.isFinite(fromDay) || !Number.isFinite(value)) return;
-
-    if (daysOverdue >= fromDay) {
-      const applicableDaysInTier = Math.min(daysOverdue, toDay) - fromDay + 1;
-      const isOneTime = rule.frequency === "one-time";
-      const daysToCalculate = isOneTime ? 1 : applicableDaysInTier;
-      if (daysToCalculate <= 0) return;
-
-      if (rule.type === "fixed") {
-        penalty += value * daysToCalculate;
-      } else if (rule.type === "percentageOfPrincipal") {
-        penalty += installmentAmount * (value / 100) * daysToCalculate;
-      } else if (rule.type === "percentageOfCompound") {
-        penalty += installmentAmount * (value / 100) * daysToCalculate;
-      }
-    }
-  });
-  return Math.max(0, penalty);
-};
+// A payment intent the gateway has not confirmed within this window is dead;
+// refusing to process it prevents a late/replayed callback from applying a
+// stale quote to today's balance.
+const PENDING_PAYMENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Function to validate the token from the Authorization header
 async function validateAuthHeader(authHeader: string | null) {
@@ -256,6 +212,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (Date.now() - new Date(pendingPayment.createdAt).getTime() > PENDING_PAYMENT_TTL_MS) {
+      await prisma.pendingPayment.update({
+        where: { transactionId: pendingPayment.transactionId },
+        data: { status: "EXPIRED" },
+      });
+      console.warn("[PAYMENT_CALLBACK] stale payment intent expired", {
+        callbackLogId,
+        pendingPaymentId: pendingPayment.id,
+        createdAt: pendingPayment.createdAt,
+      });
+      return NextResponse.json(
+        { message: "Payment intent expired; not processed." },
+        { status: 200 }
+      );
+    }
+
     const { loanId, amount: paymentAmount, borrowerId } = pendingPayment;
     console.log("[PAYMENT_CALLBACK] pending payment found", {
       callbackLogId,
@@ -328,97 +300,85 @@ export async function POST(request: NextRequest) {
         { status: 200 }
       );
     }
-    //test
     const updatedLoan = await prisma.$transaction(async (tx) => {
+      // Claim this payment intent atomically. Under concurrent duplicate
+      // callbacks both transactions reach this row; the second one blocks on
+      // the row lock, then sees COMPLETED and applies nothing. If processing
+      // below throws, the claim rolls back with the transaction.
+      const claim = await tx.pendingPayment.updateMany({
+        where: {
+          transactionId: pendingPayment.transactionId,
+          status: { notIn: ["COMPLETED", "EXPIRED"] },
+        },
+        data: { status: "COMPLETED" },
+      });
+      if (claim.count === 0) {
+        console.log("[PAYMENT_CALLBACK] intent already claimed; skipping", {
+          callbackLogId,
+          pendingPaymentId: pendingPayment.id,
+        });
+        return await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
+      }
+
+      let due: any = null;
+      let refreshedInstallments: any[] = [];
       if (hasInstallments) {
         // Rollover merge: when an installment is past due, close it and merge
-        // its amount into the next installment. The next installment becomes active.
-        const installmentsBefore = await tx.loanInstallment.findMany({
-          where: { loanId },
-          orderBy: { installmentNumber: "asc" },
-        });
-
-        // Use centralized rollover logic with transaction client
+        // its unpaid remainder into the next installment.
         await ensureInstallmentRollover(tx as any, loanId, paymentDate);
 
-        const refreshedInstallments = await tx.loanInstallment.findMany({
+        refreshedInstallments = await tx.loanInstallment.findMany({
           where: { loanId },
           orderBy: { installmentNumber: "asc" },
         });
-        const activeInstallment = refreshedInstallments.find(
-          (i) => i.isActive && i.status !== "PAID"
-        );
-        if (!activeInstallment) {
-          throw new Error("No active installment found for this loan.");
-        }
 
-        const penaltyRules = safeJsonParse(
-          (loan.product as any).penaltyRules,
-          []
-        );
-        const penaltyPerInstallment =
-          (loan.product as any).penaltyPerInstallment ?? false;
-
-        // If penaltyPerInstallment is ON, calculate penalty based on installment due date
-        // If penaltyPerInstallment is OFF, calculate penalty based on loan due date only
-        const penaltyDueDate = penaltyPerInstallment
-          ? activeInstallment.dueDate
-          : loan.dueDate;
-        const penaltyForInstallment = calculatePenaltyForInstallment(
-          activeInstallment.amount || 0,
-          penaltyDueDate,
-          penaltyRules,
-          paymentDate
-        );
-
-        // Loan-level due buckets (service fee / interest / tax) are payable alongside installment repayments.
-        // Only installment-level penalty+principal count toward installment.paidAmount.
-        // Use detailed calculation to get accurate paid amounts from day-by-day simulation
-        const totals = calculateTotalRepayableDetailed(
+        // Single source of truth for the amount due (fees are billed by
+        // entitlement, never re-billed on repeat payments — see repayment-due.ts).
+        due = computeActiveInstallmentDue(
           loan as any,
           loan.product as any,
-          taxConfigs,
+          taxConfigs as any,
+          refreshedInstallments as any,
           paymentDate
         );
+        if (!due) {
+          // Every installment is settled but a loan-level residual is still
+          // owed (e.g. the fee share of merged installments that the old
+          // billing logic never collected, on a loan reopened to recover it).
+          // Fall through to loan-level settlement so the balance stays
+          // collectible instead of throwing.
+          if (paymentAmount > totalDue + MONEY_EPSILON) {
+            console.error(
+              `[PAYMENT_CALLBACK_ERROR] Overpayment detected. Payment amount (${paymentAmount}) exceeds loan-level balance due (${totalDue}).`
+            );
+            await tx.pendingPayment.update({
+              where: { transactionId: pendingPayment.transactionId },
+              data: { status: "FAILED" },
+            });
+            return await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
+          }
+          console.log(
+            "[PAYMENT_CALLBACK] installments settled; collecting loan-level residual",
+            { callbackLogId, loanId, totalDue }
+          );
+        }
+      }
+
+      if (due) {
+        const activeInstallment = refreshedInstallments.find(
+          (i) => i.id === due.installmentId
+        )!;
+
         const alreadyRepaid = loan.repaidAmount || 0;
+        const penaltyForInstallment = due.penaltyForInstallment;
+        const penaltyRemaining = due.penaltyRemaining;
+        const serviceFeeDue = due.serviceFeeDue;
+        const interestDue = due.interestDue;
+        const taxDue = due.taxDue;
+        const principalRemaining = due.principalRemaining;
+        const totalDueForInstallment = due.total;
 
-        // Each installment pays an equal share of service fee, interest, and tax.
-        // We use a simple per-installment split rather than cumulative tracking
-        // because serviceFeePaid/interestPaid from the calculator are unreliable
-        // when daily fees are disabled (they stay 0).
-        const totalInstallments = refreshedInstallments.length || 1;
-
-        const serviceFeeDue = Math.max(0, totals.serviceFee / totalInstallments);
-        const interestDue = Math.max(0, totals.interest / totalInstallments);
-
-        // Tax proportional to per-installment taxable amounts
-        const taxDue = Math.max(0, totals.tax / totalInstallments);
-
-        const penaltyPaidSoFar = Math.min(
-          activeInstallment.paidAmount || 0,
-          penaltyForInstallment
-        );
-        const penaltyRemaining = Math.max(
-          0,
-          penaltyForInstallment - penaltyPaidSoFar
-        );
-        const principalPaidSoFar = Math.max(
-          0,
-          (activeInstallment.paidAmount || 0) - penaltyPaidSoFar
-        );
-        const principalRemaining = Math.max(
-          0,
-          (activeInstallment.amount || 0) - principalPaidSoFar
-        );
-
-        const totalDueForInstallment =
-          principalRemaining +
-          penaltyRemaining +
-          serviceFeeDue +
-          interestDue +
-          taxDue;
-
-        if (paymentAmount > totalDueForInstallment + 0.01) {
+        if (paymentAmount > totalDueForInstallment + MONEY_EPSILON) {
           console.error(
             `[PAYMENT_CALLBACK_ERROR] Overpayment detected. Payment amount (${paymentAmount}) exceeds installment due (${totalDueForInstallment}).`
           );
@@ -672,18 +632,29 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        const newPaidAmount =
-          (activeInstallment.paidAmount || 0) + penaltyToPay + principalToPay;
+        // Settled when at most rounding dust (< 1 cent) remains — quotes are
+        // rounded to the cent, so demanding exact float equality used to leave
+        // installments open by fractions of a cent forever.
         const isInstallmentFullyPaid =
-          newPaidAmount >=
-          (activeInstallment.amount || 0) + penaltyForInstallment - 1e-9;
+          principalRemaining - principalToPay <= MONEY_EPSILON &&
+          penaltyRemaining - penaltyToPay <= MONEY_EPSILON;
+
+        // On settlement, snap paidAmount to the exact amount owed so no dust
+        // survives into rollovers or later quotes.
+        const newPaidAmount = isInstallmentFullyPaid
+          ? (activeInstallment.amount || 0) + penaltyForInstallment
+          : (activeInstallment.paidAmount || 0) + penaltyToPay + principalToPay;
 
         await tx.loanInstallment.update({
           where: { id: activeInstallment.id },
           data: {
             paidAmount: newPaidAmount,
             paidAt: paymentDate,
-            status: isInstallmentFullyPaid ? "Paid" : "Pending",
+            status: isInstallmentFullyPaid
+              ? INSTALLMENT_STATUS.Paid
+              : differenceInDays(paymentDate, activeInstallment.dueDate) > 0
+                ? INSTALLMENT_STATUS.Overdue
+                : INSTALLMENT_STATUS.Pending,
             penaltyAmount: penaltyForInstallment,
             isActive: !isInstallmentFullyPaid,
           },
@@ -695,31 +666,11 @@ export async function POST(request: NextRequest) {
         });
 
         if (isInstallmentFullyPaid) {
-          // Mark all merged installments (that were merged INTO this active installment) as Paid
-          // These are installments with status 'MERGED' and installmentNumber > activeInstallment.installmentNumber
-          // that had their amount rolled into the active installment
-          const mergedInstallments = refreshedInstallments.filter(
-            (i) =>
-              i.status === "MERGED" &&
-              i.installmentNumber > activeInstallment.installmentNumber
-          );
-
-          if (mergedInstallments.length > 0) {
-            await Promise.all(
-              mergedInstallments.map((merged) =>
-                tx.loanInstallment.update({
-                  where: { id: merged.id },
-                  data: { status: "PAID", paidAt: paymentDate },
-                })
-              )
-            );
-          }
-
           const nextPayable = await tx.loanInstallment.findFirst({
             where: {
               loanId,
               installmentNumber: { gt: activeInstallment.installmentNumber },
-              status: { notIn: ["MERGED", "PAID"] },
+              status: { notIn: SETTLED_STATUSES },
               amount: { gt: 0 },
             },
             orderBy: { installmentNumber: "asc" },
@@ -730,10 +681,34 @@ export async function POST(request: NextRequest) {
               data: { isActive: true },
             });
           } else {
-            await tx.loan.update({
-              where: { id: loanId },
-              data: { repaymentStatus: "Paid" },
-            });
+            // Last installment settled — but only mark the LOAN paid when the
+            // money received actually covers the total repayable. (Loans used
+            // to be marked Paid while the fee share of merged installments was
+            // never billed.)
+            const newRepaidTotal = alreadyRepaid + paymentAmount;
+            if (newRepaidTotal >= totals.total - LOAN_SETTLE_EPSILON) {
+              const today = startOfDay(new Date());
+              const loanDue = startOfDay(loan.dueDate);
+              const behavior: RepaymentBehavior = isBefore(today, loanDue)
+                ? "EARLY"
+                : isEqual(today, loanDue)
+                  ? "ON_TIME"
+                  : "LATE";
+              await tx.loan.update({
+                where: { id: loanId },
+                data: { repaymentStatus: "Paid", repaymentBehavior: behavior },
+              });
+            } else {
+              console.error(
+                "[PAYMENT_CALLBACK] all installments settled but loan under-collected; leaving Unpaid",
+                {
+                  callbackLogId,
+                  loanId,
+                  repaid: newRepaidTotal,
+                  expected: totals.total,
+                }
+              );
+            }
           }
         }
 
@@ -750,10 +725,6 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        await tx.pendingPayment.update({
-          where: { transactionId: pendingPayment.transactionId },
-          data: { status: "COMPLETED" },
-        });
         console.log("[PAYMENT_CALLBACK] installment repayment completed", {
           callbackLogId,
           loanId,
@@ -1062,7 +1033,7 @@ export async function POST(request: NextRequest) {
       });
 
       const newRepaidAmount = alreadyRepaid + paymentAmount;
-      const isFullyPaid = newRepaidAmount >= totals.total;
+      const isFullyPaid = newRepaidAmount >= totals.total - LOAN_SETTLE_EPSILON;
       let repaymentBehavior: RepaymentBehavior | null = null;
 
       if (isFullyPaid) {
@@ -1094,10 +1065,6 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      await tx.pendingPayment.update({
-        where: { transactionId: pendingPayment.transactionId },
-        data: { status: "COMPLETED" },
-      });
       console.log("[PAYMENT_CALLBACK] normal repayment completed", {
         callbackLogId,
         loanId,

@@ -6,10 +6,10 @@ import type { LoanDetails, LoanProduct, Tax } from '@/lib/types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { X, Delete, Loader2 } from 'lucide-react';
-import { differenceInDays } from 'date-fns';
 import { cn } from '@/lib/utils';
-import { calculateTotalRepayableDetailed } from '@/lib/loan-calculator';
-import { calculateInstallmentPenalty } from '@/lib/installment-penalty';
+import { calculateTotalRepayable } from '@/lib/loan-calculator';
+import { computeActiveInstallmentDue } from '@/lib/repayment-due';
+import { isMergedStatus, isSettledStatus } from '@/lib/installment-status';
 import { useToast } from '@/hooks/use-toast';
 import { Alert, AlertDescription, AlertTitle } from '../ui/alert';
 import { AlertCircle } from 'lucide-react';
@@ -138,94 +138,56 @@ export function RepaymentDialog({ isOpen, onClose, onConfirm, loan, totalBalance
 
     const activeInstallment = useMemo(() => {
         const installments = Array.isArray((loan as any)?.installments) ? (loan as any).installments : [];
-        return installments.find((i: any) => i && i.isActive);
+        return installments.find((i: any) => i && i.isActive && !isSettledStatus(i.status));
     }, [loan]);
 
     const mergedNextInstallment = useMemo(() => {
         const installments = Array.isArray((loan as any)?.installments) ? (loan as any).installments : [];
         if (!activeInstallment) return undefined;
         return installments.find((i: any) =>
-            i && i.status === 'Merged' && i.installmentNumber === activeInstallment.installmentNumber + 1
+            i && isMergedStatus(i.status) && i.installmentNumber === activeInstallment.installmentNumber + 1
         );
     }, [loan, activeInstallment]);
 
     const isInstallmentPayment = !!activeInstallment;
-    
+
     const breakdown = useMemo(() => {
         if (!loan || !loan.product) return { principal: 0, interest: 0, penalty: 0, serviceFee: 0, tax: 0 };
-        
-        // Calculate totals with detailed breakdown of what's been paid
-        const totals = calculateTotalRepayableDetailed(loan, loan.product, taxConfigs, asOfDate);
-        
-        // For installment-based loans - principal is per installment, but interest/penalty on full loan
-        if (isInstallmentPayment && activeInstallment) {
-            const alreadyRepaid = loan.repaidAmount || 0;
-            
-            // Get installment principal amount remaining (only this installment's share)
-            const instPrincipalOutstanding = Math.max(0, (activeInstallment.amount || 0) - (activeInstallment.paidAmount || 0));
-            
-            // Calculate penalty on FULL remaining loan principal
-            const fullPrincipalOutstanding = Math.max(0, loan.loanAmount - totals.principalPaidFromInterestCalc);
-            const penaltyRules = (loan.product as any).penaltyRules || [];
-            const penaltyPerInstallment = (loan.product as any).penaltyPerInstallment ?? false;
-            const penaltyDueDate = penaltyPerInstallment
-                ? new Date(activeInstallment.dueDate)
-                : new Date(loan.dueDate);
-            const installmentPenalty = calculateInstallmentPenalty({
-                dueDate: penaltyDueDate,
-                principalOutstanding: fullPrincipalOutstanding,
-                penaltyRules,
-                asOfDate: asOfDate,
-            });
-            
-            // Use the accurate paid amounts from the detailed calculation
-            // Service fee is equally split across all installments
-            const allInstallments = Array.isArray((loan as any)?.installments) ? (loan as any).installments : [];
-            const totalInstallments = allInstallments.length || 1;
-            const serviceFeePerInstallment = totals.serviceFee / totalInstallments;
-            const serviceFeeDue = Math.max(0, serviceFeePerInstallment - (totals.serviceFeePaid / totalInstallments));
-            
-            // Interest remaining after what's been paid (accurate from simulation)
-            const interestDue = Math.max(0, totals.interest - totals.interestPaid);
-            
-            // Tax is calculated on the remaining taxable amounts
-            // For simplicity, assume tax is proportional to what's still due
-            const totalTaxableOriginal = totals.interest + totals.serviceFee;
-            const totalTaxableDue = interestDue + serviceFeeDue;
-            const taxDue = totalTaxableOriginal > 0 
-                ? Math.max(0, (totals.tax / totalTaxableOriginal) * totalTaxableDue)
-                : 0;
-            
-            // Penalty - for now we track it separately (not paid via interest simulation)
-            // Check if any penalty has been paid from alreadyRepaid that wasn't captured
-            const penaltyDue = Math.max(0, installmentPenalty);
-            
-            return {
-                principal: Math.round(instPrincipalOutstanding * 100) / 100,
-                interest: Math.round(interestDue * 100) / 100,
-                penalty: Math.round(penaltyDue * 100) / 100,
-                serviceFee: Math.round(serviceFeeDue * 100) / 100,
-                tax: Math.round(taxDue * 100) / 100,
-            };
+
+        // Installment loans: identical computation to the server's payment
+        // guard, so the quoted breakdown always matches what will be accepted.
+        const installments = Array.isArray((loan as any)?.installments) ? (loan as any).installments : [];
+        if (isInstallmentPayment && installments.length > 0) {
+            const due = computeActiveInstallmentDue(loan, loan.product, taxConfigs, installments, asOfDate);
+            if (due) {
+                return {
+                    principal: due.principalRemaining,
+                    interest: due.interestDue,
+                    penalty: due.penaltyRemaining,
+                    serviceFee: due.serviceFeeDue,
+                    tax: due.taxDue,
+                };
+            }
         }
-        
-        // For non-installment loans
-        // Use the same payment priority estimation
+
+        // For non-installment loans, estimate the remaining buckets by
+        // replaying the payment priority over what has been repaid.
+        const totals = calculateTotalRepayable(loan, loan.product, taxConfigs, asOfDate);
         const alreadyRepaid = loan.repaidAmount || 0;
         let remaining = alreadyRepaid;
-        
+
         const penaltyPaid = Math.min(totals.penalty, remaining);
         remaining = Math.max(0, remaining - penaltyPaid);
-        
+
         const serviceFeePaid = Math.min(totals.serviceFee, remaining);
         remaining = Math.max(0, remaining - serviceFeePaid);
-        
+
         const interestPaid = Math.min(totals.interest, remaining);
         remaining = Math.max(0, remaining - interestPaid);
-        
+
         const taxPaid = Math.min(totals.tax, remaining);
         remaining = Math.max(0, remaining - taxPaid);
-        
+
         const principalPaid = remaining;
 
         return {
@@ -235,7 +197,7 @@ export function RepaymentDialog({ isOpen, onClose, onConfirm, loan, totalBalance
             penalty: Math.max(0, totals.penalty - penaltyPaid),
             tax: Math.max(0, totals.tax - taxPaid),
         };
-    }, [loan, taxConfigs, isInstallmentPayment, activeInstallment, asOfDate]);
+    }, [loan, taxConfigs, isInstallmentPayment, asOfDate]);
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
