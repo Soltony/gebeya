@@ -47,6 +47,7 @@ type ReversalRow = {
   providerId: string;
   originalProviderId: string | null;
   creditAccount: string | null;
+  customerAccount: string | null;
   amount: number | null;
   statusCode: number | null;
   createdAt: string;
@@ -351,6 +352,7 @@ export default function ReversalsPage() {
                 <TableHead>Status</TableHead>
                 <TableHead>Provider</TableHead>
                 <TableHead>Credit Account</TableHead>
+                <TableHead>Customer Account</TableHead>
                 <TableHead>Amount</TableHead>
                 <TableHead>Txn ID</TableHead>
                 <TableHead>Loan</TableHead>
@@ -360,7 +362,7 @@ export default function ReversalsPage() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center">
+                  <TableCell colSpan={9} className="h-24 text-center">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
@@ -388,6 +390,9 @@ export default function ReversalsPage() {
                       </TableCell>
                       <TableCell className="font-mono">
                         {r.creditAccount || "—"}
+                      </TableCell>
+                      <TableCell className="font-mono">
+                        {r.customerAccount || "—"}
                       </TableCell>
                       <TableCell>{r.amount ?? "—"}</TableCell>
                       <TableCell className="font-mono">
@@ -426,7 +431,7 @@ export default function ReversalsPage() {
                 })
               ) : (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center">
+                  <TableCell colSpan={9} className="h-24 text-center">
                     {filterMode === "posted" 
                       ? "No posted loans without disbursement records found."
                       : filterMode === "all"
@@ -481,6 +486,10 @@ export default function ReversalsPage() {
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="text-muted-foreground">Credit Account:</div>
                 <div className="font-mono">{cancellingRow.creditAccount}</div>
+                <div className="text-muted-foreground">Customer Account:</div>
+                <div className="font-mono">
+                  {cancellingRow.customerAccount || "—"}
+                </div>
                 <div className="text-muted-foreground">Amount:</div>
                 <div>{cancellingRow.amount ?? "—"}</div>
                 <div className="text-muted-foreground">Loan ID:</div>

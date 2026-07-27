@@ -210,6 +210,7 @@ export async function GET(req: NextRequest) {
       providerId: loan.product?.provider?.id || null,
       originalProviderId: loan.product?.provider?.id || null,
       creditAccount: accountByBorrower.get(loan.borrowerId) || null,
+      customerAccount: accountByBorrower.get(loan.borrowerId) || null,
       amount: loan.loanAmount,
       statusCode: null,
       createdAt: loan.createdAt.toISOString(),
@@ -255,7 +256,19 @@ export async function GET(req: NextRequest) {
   // Add search filter for disbursement transactions (by credit account)
   if (search) {
     const matchingCreditAccounts = await getMatchingCreditAccounts(search);
-    if (matchingCreditAccounts.length === 0) {
+    const matchingBorrowerIds = await getMatchingBorrowerIds(search);
+    // The credit account may be a merchant account, so also match through the
+    // loans of the borrowers owning the searched account/phone number.
+    const matchingLoanIds = matchingBorrowerIds.length
+      ? (
+          await prisma.loan.findMany({
+            where: { borrowerId: { in: matchingBorrowerIds } },
+            select: { id: true },
+            take: 1000,
+          })
+        ).map((l) => l.id)
+      : [];
+    if (matchingCreditAccounts.length === 0 && matchingLoanIds.length === 0) {
       return NextResponse.json({
         page,
         limit,
@@ -264,7 +277,14 @@ export async function GET(req: NextRequest) {
         rows: [],
       });
     }
-    where.AND.push({ creditAccount: { in: matchingCreditAccounts } });
+    where.AND.push({
+      OR: [
+        ...(matchingCreditAccounts.length
+          ? [{ creditAccount: { in: matchingCreditAccounts } }]
+          : []),
+        ...(matchingLoanIds.length ? [{ loanId: { in: matchingLoanIds } }] : []),
+      ],
+    });
   }
 
   const [total, txs] = await Promise.all([
@@ -368,21 +388,57 @@ export async function GET(req: NextRequest) {
   const phoneByAccount = new Map<string, string>();
   for (const p of phoneMaps) phoneByAccount.set(p.accountNumber, p.phoneNumber);
 
+  // The creditAccount can be a merchant account (BNPL) rather than the
+  // borrower's own account, so resolve the customer account through the loan.
+  const txLoanIds = Array.from(
+    new Set(txs.map((t) => t.loanId).filter(Boolean) as string[])
+  );
+  const txLoans = txLoanIds.length
+    ? await prisma.loan.findMany({
+        where: { id: { in: txLoanIds } },
+        select: { id: true, borrowerId: true },
+      })
+    : [];
+  const borrowerByLoanId = new Map<string, string>();
+  for (const l of txLoans) borrowerByLoanId.set(l.id, l.borrowerId);
+
+  const borrowerIdsForAccounts = Array.from(
+    new Set([...borrowerByLoanId.values(), ...phoneByAccount.values()])
+  );
+  // Prefer the active account, then the most recent (same rule as 'posted')
+  const borrowerPhoneAccounts = borrowerIdsForAccounts.length
+    ? await prisma.phoneAccount.findMany({
+        where: { phoneNumber: { in: borrowerIdsForAccounts } },
+        select: { phoneNumber: true, accountNumber: true },
+        orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
+      })
+    : [];
+  const accountByBorrower = new Map<string, string>();
+  for (const pa of borrowerPhoneAccounts) {
+    if (!accountByBorrower.has(pa.phoneNumber)) {
+      accountByBorrower.set(pa.phoneNumber, pa.accountNumber);
+    }
+  }
+
   const rows = await Promise.all(
     txs.map(async (t) => {
       const reversed = reversalById.get(t.id) ?? null;
-      const borrowerId = phoneByAccount.get(t.creditAccount) ?? null;
+      const accountOwnerId = phoneByAccount.get(t.creditAccount) ?? null;
+      const loanBorrowerId = t.loanId
+        ? borrowerByLoanId.get(t.loanId) ?? null
+        : null;
+      const borrowerId = accountOwnerId ?? loanBorrowerId;
 
       // best-effort loan resolution
       let loanId: string | null = null;
-      if (borrowerId && t.amount != null) {
+      if (accountOwnerId && t.amount != null) {
         const internalProviderId = t.originalProviderId || t.providerId;
         const windowStart = new Date(t.createdAt.getTime() - 60 * 60 * 1000);
         const windowEnd = new Date(t.createdAt.getTime() + 60 * 60 * 1000);
 
         const loan = await prisma.loan.findFirst({
           where: {
-            borrowerId,
+            borrowerId: accountOwnerId,
             loanAmount: Number(t.amount),
             createdAt: { gte: windowStart, lte: windowEnd },
             product: { providerId: internalProviderId },
@@ -399,6 +455,14 @@ export async function GET(req: NextRequest) {
         providerId: t.providerId,
         originalProviderId: t.originalProviderId,
         creditAccount: t.creditAccount,
+        // When the credit account belongs to the borrower it is the customer
+        // account; otherwise (merchant credit) fall back to the loan borrower's
+        // own account.
+        customerAccount: accountOwnerId
+          ? t.creditAccount
+          : loanBorrowerId
+            ? accountByBorrower.get(loanBorrowerId) ?? null
+            : null,
         amount: t.amount,
         statusCode: t.statusCode,
         createdAt: t.createdAt.toISOString(),
