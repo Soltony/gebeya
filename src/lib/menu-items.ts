@@ -71,6 +71,18 @@ export const allMenuItems: MenuItem[] = [
     roles: ['Super Admin', 'Loan Manager'],
   },
   {
+    path: '/admin/pending-payments',
+    label: 'Pending Payments',
+    icon: Download,
+    roles: ['Super Admin', 'Loan Manager'],
+  },
+  {
+    path: '/admin/pending-payment-approvals',
+    label: 'Payment Approvals',
+    icon: CheckSquare,
+    roles: ['Super Admin', 'Loan Manager'],
+  },
+  {
     path: '/admin/npl',
     label: 'NPL',
     icon: BadgeAlert,

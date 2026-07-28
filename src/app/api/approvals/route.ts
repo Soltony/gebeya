@@ -10,6 +10,13 @@ import ExcelJS from "exceljs";
 import { toCamelCase } from "@/lib/utils";
 import { Prisma } from "@prisma/client";
 import { normalizeDiscountEndDate, normalizeDiscountStartDate } from "@/lib/discount-utils";
+import { startOfDay } from "date-fns";
+import { getAsOfDate } from "@/lib/date-utils";
+import { applyBnplRepayment } from "@/lib/bnpl-repayment";
+import {
+  isResolvablePendingPaymentStatus,
+  RESOLVABLE_PENDING_PAYMENT_STATUSES,
+} from "@/lib/pending-payment-status";
 
 const approvalSchema = z.object({
   changeId: z.string(),
@@ -1639,6 +1646,130 @@ async function applyChange(
       }
       break;
 
+    case "PendingPaymentResolve":
+      if (changeType !== "CREATE") {
+        throw new Error("Invalid changeType for PendingPaymentResolve");
+      }
+
+      {
+        const actorId = context?.actorId;
+        const ipAddress = context?.ipAddress || "N/A";
+        const userAgent = context?.userAgent || "N/A";
+        const pendingPaymentId = data?.created?.pendingPaymentId || entityId;
+        const ftReference = data?.created?.ftReference;
+        const loanId = data?.created?.loanId;
+        const paymentAmount = Number(data?.created?.amount);
+
+        if (!pendingPaymentId) throw new Error("Missing pendingPaymentId");
+        if (!ftReference) throw new Error("Missing FT reference number");
+        if (!loanId) throw new Error("Missing loanId");
+        if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+          throw new Error("Missing or invalid payment amount");
+        }
+
+        const pendingPayment = await prisma.pendingPayment.findUnique({
+          where: { id: pendingPaymentId },
+        });
+        if (!pendingPayment) throw new Error("Pending payment not found");
+        if (!isResolvablePendingPaymentStatus(pendingPayment.status)) {
+          // The gateway callback settled it while the request sat in the
+          // queue; the money is already on the loan, so approving is a no-op.
+          return;
+        }
+
+        // The FT reference becomes the payment's identity, so a duplicate one
+        // would mean the same bank transaction being booked twice.
+        const duplicateReference = await prisma.pendingPayment.findUnique({
+          where: { transactionId: String(ftReference) },
+          select: { id: true },
+        });
+        if (duplicateReference && duplicateReference.id !== pendingPaymentId) {
+          throw new Error(
+            `FT reference ${ftReference} is already recorded against another payment.`
+          );
+        }
+
+        // The maker states when the money actually moved; penalty accrual and
+        // installment status must be computed as of that date, not today.
+        const paymentDate = data?.created?.paymentDate
+          ? startOfDay(new Date(data.created.paymentDate))
+          : getAsOfDate();
+
+        const [loan, taxConfigs] = await Promise.all([
+          prisma.loan.findUnique({
+            where: { id: loanId },
+            include: {
+              product: {
+                include: { provider: { include: { ledgerAccounts: true } } },
+              },
+              payments: { orderBy: { date: "asc" } },
+            },
+          }),
+          prisma.tax.findMany({ where: { status: "ACTIVE" } }),
+        ]);
+        if (!loan) throw new Error(`Loan with ID ${loanId} not found.`);
+
+        await prisma.$transaction(async (tx) => {
+          // Claim the intent first: a gateway callback arriving mid-approval
+          // blocks on this row and then finds nothing left to settle.
+          const claim = await tx.pendingPayment.updateMany({
+            where: {
+              id: pendingPaymentId,
+              status: { in: RESOLVABLE_PENDING_PAYMENT_STATUSES },
+            },
+            data: { status: "COMPLETED", transactionId: String(ftReference) },
+          });
+          if (claim.count === 0) {
+            throw new Error("This payment has already been processed.");
+          }
+
+          const result = await applyBnplRepayment(tx, {
+            loan: loan as any,
+            taxConfigs: taxConfigs as any,
+            paymentAmount,
+            paymentDate,
+            describeJournal: (installmentNumber) =>
+              installmentNumber === null
+                ? `Manual resolution for pending payment ${pendingPaymentId} (FT: ${ftReference})`
+                : `Manual resolution for installment ${installmentNumber} of loan ${loan.id}, pending payment ${pendingPaymentId} (FT: ${ftReference})`,
+            auditActorId: loan.borrowerId,
+            auditDetails: {
+              transactionId: ftReference,
+              resolvedBy: actorId || "N/A",
+            },
+            logLabel: "[PENDING_PAYMENT_RESOLVE]",
+            logId: pendingPaymentId,
+          });
+
+          // Unlike the gateway callback — which must accept the HTTP request
+          // either way — a checker is standing in front of this, so refuse the
+          // approval instead of silently booking nothing.
+          if (result.outcome === "OVERPAYMENT") {
+            throw new Error(
+              `Payment of ${paymentAmount} exceeds the ${result.scope} balance due (${result.due}). Nothing was recorded.`
+            );
+          }
+        });
+
+        await createAuditLog({
+          actorId: actorId || "N/A",
+          action: "PENDING_PAYMENT_RESOLVED",
+          entity: "PendingPayment",
+          entityId: pendingPaymentId,
+          details: {
+            pendingPaymentId,
+            ftReference,
+            loanId: loan.id,
+            borrowerId: loan.borrowerId,
+            amount: paymentAmount,
+            paymentDate: paymentDate.toISOString(),
+          },
+          ipAddress,
+          userAgent,
+        });
+      }
+      break;
+
     default:
       throw new Error(`Unknown entity type for approval: ${entityType}`);
   }
@@ -1646,7 +1777,7 @@ async function applyChange(
 
 export async function POST(req: NextRequest) {
   const user = await getUserFromSession();
-  if (!user || (!user.permissions?.["approvals"]?.update && !user.permissions?.["reversal-approval"]?.update && !user.permissions?.["merchants-approvals"]?.update)) {
+  if (!user || (!user.permissions?.["approvals"]?.update && !user.permissions?.["reversal-approval"]?.update && !user.permissions?.["merchants-approvals"]?.update && !user.permissions?.["payment-approvals"]?.update)) {
     return NextResponse.json({ error: "Not authorized" }, { status: 403 });
   }
 
