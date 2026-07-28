@@ -10,8 +10,8 @@ import { auditExternalApiRequest, auditExternalApiResponse, newAuditCorrelationI
  * POST /api/direct-payment/initiate
  *
  * Initiates a direct (non-BNPL) payment through the NIB payment gateway.
- * This is completely separate from the loan-repayment flow; it uses
- * DirectPendingPayment / DirectPaymentTransaction tables.
+ * The payment intent is tracked in DirectPendingPayment; the gateway callback
+ * is handled by the unified /api/payment-callback endpoint.
  *
  * Body: { orderId: string; amount: number }
  */
@@ -30,8 +30,10 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // Derive the direct-payment callback from the existing CALLBACK_URL base
-    const DIRECT_CALLBACK_URL = CALLBACK_URL.replace(/\/api\/payment-callback\/?$/, '/api/direct-payment/callback');
+    // NOTE: Using the same CALLBACK_URL for all payment types.
+    // The unified /api/payment-callback handler differentiates by looking up
+    // the txnRef in both PendingPayment (BNPL) and DirectPendingPayment (DIRECT).
+    const DIRECT_CALLBACK_URL = CALLBACK_URL;
 
     try {
         const ipAddress = req.headers.get('x-forwarded-for') || 'N/A';

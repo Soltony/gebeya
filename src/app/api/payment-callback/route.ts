@@ -131,6 +131,31 @@ export async function POST(request: NextRequest) {
     transactionTime,
   });
 
+  // --- Determine payment type: BNPL or DIRECT ---
+  // Check both PendingPayment (BNPL) and DirectPendingPayment (DIRECT) by reference.
+  const referenceFilter = [
+    txnRef ? { transactionId: txnRef } : undefined,
+    transactionId ? { transactionId } : undefined,
+  ].filter(Boolean) as any;
+
+  let paymentType: "BNPL" | "DIRECT" = "BNPL";
+  const bnplPending = await prisma.pendingPayment.findFirst({
+    where: { OR: referenceFilter },
+  });
+  const directPending = !bnplPending
+    ? await (prisma as any).directPendingPayment.findFirst({
+        where: { OR: referenceFilter },
+      })
+    : null;
+
+  if (directPending) {
+    paymentType = "DIRECT";
+  }
+  console.log("[PAYMENT_CALLBACK] resolved payment type", {
+    callbackLogId,
+    paymentType,
+  });
+
   // --- Log payment transaction ---
   try {
     // Try to find an existing PaymentTransaction by either payload.transactionId
@@ -152,6 +177,7 @@ export async function POST(request: NextRequest) {
         data: {
           status: "RECEIVED",
           payload: JSON.stringify(requestBody),
+          paymentType,
           transactionId: transactionId || existingAny.transactionId,
           txnRef: txnRef || existingAny.txnRef,
         } as any,
@@ -161,6 +187,7 @@ export async function POST(request: NextRequest) {
         data: {
           transactionId: transactionId || txnRef,
           txnRef: txnRef,
+          paymentType,
           status: "RECEIVED",
           payload: JSON.stringify(requestBody),
         } as any,
@@ -170,21 +197,98 @@ export async function POST(request: NextRequest) {
     console.error("Failed to log payment transaction:", e);
   }
 
-  // Step 3: Process payment
+  // --- Route to DIRECT payment handler ---
+  if (paymentType === "DIRECT" && directPending) {
+    try {
+      if (directPending.status === "COMPLETED") {
+        console.log("[PAYMENT_CALLBACK] duplicate direct callback ignored", {
+          callbackLogId,
+          directPendingId: directPending.id,
+        });
+        return NextResponse.json(
+          { message: "Payment already processed." },
+          { status: 200 }
+        );
+      }
+
+      const {
+        orderId,
+        borrowerId,
+        merchantId,
+        amount: expectedAmount,
+      } = directPending;
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      if (!order) {
+        throw new Error(`Order ${orderId} not found.`);
+      }
+
+      // Only move to DELIVERED if the order is in an appropriate state
+      if (
+        order.status === "ON_DELIVERY" ||
+        order.status === "PENDING_MERCHANT_CONFIRMATION"
+      ) {
+        await prisma.order.update({
+          where: { id: orderId },
+          data: { status: "DELIVERED" },
+        });
+      }
+
+      await (prisma as any).directPendingPayment.update({
+        where: { transactionId: directPending.transactionId },
+        data: { status: "COMPLETED" },
+      });
+
+      await prisma.paymentTransaction.updateMany({
+        where: {
+          OR: [
+            transactionId ? { transactionId } : undefined,
+            txnRef ? { txnRef } : undefined,
+          ].filter(Boolean) as any,
+        },
+        data: { status: "PROCESSED" } as any,
+      });
+
+      await createAuditLog({
+        actorId: borrowerId,
+        action: "DIRECT_PAYMENT_SUCCESS",
+        entity: "ORDER",
+        entityId: orderId,
+        details: {
+          transactionId,
+          txnRef,
+          paidAmount,
+          merchantId,
+          expectedAmount,
+        },
+      });
+
+      console.log("[PAYMENT_CALLBACK] direct payment processed", {
+        callbackLogId,
+        orderId,
+        directPendingId: directPending.id,
+      });
+      return NextResponse.json(
+        { message: "Direct payment processed successfully." },
+        { status: 200 }
+      );
+    } catch (e: any) {
+      console.error("Direct Payment Callback processing error:", e);
+      return NextResponse.json(
+        { message: e.message || "Internal processing error." },
+        { status: 500 }
+      );
+    }
+  }
+
+  // --- Route to BNPL payment handler ---
   try {
     const callbackReference = txnRef || transactionId;
     console.log("[PAYMENT_CALLBACK] looking up pending payment", {
       callbackLogId,
       callbackReference: mask(callbackReference),
     });
-    const pendingPayment = await prisma.pendingPayment.findFirst({
-      where: {
-        OR: [
-          txnRef ? { transactionId: txnRef } : undefined,
-          transactionId ? { transactionId } : undefined,
-        ].filter(Boolean) as any,
-      },
-    });
+    const pendingPayment = bnplPending;
     if (!pendingPayment) {
       console.error(
         "[PAYMENT_CALLBACK] no pending payment found",
