@@ -7,15 +7,23 @@ const COMMON_PASSWORDS = new Set([
   '123456','123456789','qwerty','password','1234567','12345678','12345','111111','123123','password1','1234567890','1234','welcome','letmein','admin','iloveyou'
 ]);
 
-// Check password against HaveIBeenPwned Pwned Passwords API
+// Check password against HaveIBeenPwned Pwned Passwords API.
+// Fails open: if the API is unreachable (offline, TLS-intercepting proxy, HIBP
+// outage) we must not block the user — the local policy checks still apply.
 export async function isPwnedPassword(password: string): Promise<boolean> {
-  const sha1 = await import('crypto').then(c => c.createHash('sha1').update(password).digest('hex').toUpperCase());
-  const prefix = sha1.slice(0, 5);
-  const suffix = sha1.slice(5);
-  const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`);
-  if (!res.ok) return false; // If API fails, do not block
-  const text = await res.text();
-  return text.split('\n').some(line => line.startsWith(suffix));
+  try {
+    const sha1 = await import('crypto').then(c => c.createHash('sha1').update(password).digest('hex').toUpperCase());
+    const prefix = sha1.slice(0, 5);
+    const suffix = sha1.slice(5);
+    const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`);
+    if (!res.ok) return false; // If API fails, do not block
+    const text = await res.text();
+    return text.split('\n').some(line => line.startsWith(suffix));
+  } catch (err) {
+    // Network/TLS failure rejects before the res.ok check above.
+    console.warn('Pwned password check unavailable, skipping', err);
+    return false;
+  }
 }
 
 export function isCommonPassword(pw: string) {

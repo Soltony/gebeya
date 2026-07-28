@@ -11,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
+import { isPwnedPasswordClient, validatePasswordClient } from '@/lib/password-policy';
 
 export default function ChangePasswordPage() {
   const router = useRouter();
@@ -22,20 +23,6 @@ export default function ChangePasswordPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const { toast } = useToast();
-  
-  const COMMON_PASSWORDS = new Set([
-    '123456','123456789','qwerty','password','1234567','12345678','12345','111111','123123','password1','1234567890','1234','welcome','letmein','admin','iloveyou'
-  ]);
-
-  function validatePasswordClient(pw: string) {
-    if (!pw || pw.length < 8) return 'Password must be at least 8 characters long.';
-    if (!/(?=.*[a-z])/.test(pw)) return 'Password must contain a lowercase letter.';
-    if (!/(?=.*[A-Z])/.test(pw)) return 'Password must contain an uppercase letter.';
-    if (!/(?=.*\d)/.test(pw)) return 'Password must contain a number.';
-    if (!/(?=.*[^A-Za-z0-9])/.test(pw)) return 'Password must contain a symbol.';
-    if (COMMON_PASSWORDS.has(pw.toLowerCase())) return 'Password is too common or compromised.';
-    return null;
-  }
 
   const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,23 +42,10 @@ export default function ChangePasswordPage() {
 
     setIsLoading(true);
     // Check pwned password via server helper endpoint before sending change request
-    try {
-      const pwnedRes = await fetch('/api/utils/pwned-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: newPassword }),
-      });
-      if (pwnedRes.ok) {
-        const pwnedData = await pwnedRes.json();
-        if (pwnedData?.pwned) {
-          setIsLoading(false);
-          setError('Password has been found in a data breach. Please choose a more secure password.');
-          return;
-        }
-      }
-    } catch (err) {
-      // If the pwned check fails, do not block the user; proceed and let server enforce.
-      console.warn('Pwned password check failed', err);
+    if (await isPwnedPasswordClient(newPassword)) {
+      setIsLoading(false);
+      setError('Password has been found in a data breach. Please choose a more secure password.');
+      return;
     }
     try {
       const response = await fetch('/api/auth/change-password', {

@@ -13,7 +13,8 @@ import {
   LogOut,
   User,
   FileCog,
-  BadgeAlert
+  BadgeAlert,
+  KeyRound
 } from 'lucide-react';
 import {
   SidebarProvider,
@@ -45,6 +46,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Logo } from '@/components/icons';
+import { ChangePasswordDialog } from '@/components/admin/change-password-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import type { LoanProvider } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -87,6 +89,7 @@ export function ProtectedLayout({ children, providers }: ProtectedLayoutProps) {
   const { currentUser, logout, isLoading } = useAuth();
 
   const [mounted, setMounted] = React.useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = React.useState(false);
   React.useEffect(() => {
     setMounted(true);
   }, []);
@@ -277,6 +280,13 @@ export function ProtectedLayout({ children, providers }: ProtectedLayoutProps) {
                 <DropdownMenuContent align="end">
                   <DropdownMenuLabel>{currentUser?.fullName}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => setIsChangePasswordOpen(true)}
+                    className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+                  >
+                    <KeyRound className="mr-2 h-4 w-4" />
+                    <span>Change Password</span>
+                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleLogout} className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground">
                     <LogOut className="mr-2 h-4 w-4" />
                     <span>Logout</span>
@@ -284,6 +294,10 @@ export function ProtectedLayout({ children, providers }: ProtectedLayoutProps) {
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
+            <ChangePasswordDialog
+              open={isChangePasswordOpen}
+              onOpenChange={setIsChangePasswordOpen}
+            />
           </header>
           <main className="flex-1 overflow-x-auto">
             {!isCurrentRouteAllowed ? (
