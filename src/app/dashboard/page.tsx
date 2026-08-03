@@ -8,6 +8,7 @@ import { redirect } from 'next/navigation';
 import { requireMiniAppAuthContext } from '@/lib/miniapp-auth';
 import { calculateInstallmentPenalty } from '@/lib/installment-penalty';
 import { getAsOfDate } from '@/lib/date-utils';
+import { getPhoneNumbersForAccount } from '@/lib/account-utils';
 import { ensureInstallmentRollover } from '@/lib/installment-rollover';
 
 // Ensure dashboard always renders dynamically and bypasses cache so rollover runs
@@ -59,10 +60,14 @@ async function getProviders(): Promise<LoanProvider[]> {
 async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
      try {
         if (!borrowerId) return [];
+
+        // Get all phone numbers linked to this account to support phone number changes
+        const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
         // First, ensure any overdue installments are rolled over (merged)
         // so dashboard sees the combined installment amounts without requiring
         // the user to open the loan detail page.
-        const loans = await prisma.loan.findMany({ where: { borrowerId }, select: { id: true } });
+        const loans = await prisma.loan.findMany({ where: { borrowerId: { in: allPhoneNumbersForAccount } }, select: { id: true } });
 
         // Use centralized rollover logic: when an installment is overdue,
         // close it and merge its amount into the next installment
@@ -71,7 +76,7 @@ async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
         }
 
         const refreshedLoans = await prisma.loan.findMany({
-            where: { borrowerId },
+            where: { borrowerId: { in: allPhoneNumbersForAccount } },
             include: {
                 product: { include: { provider: true } },
                 payments: { orderBy: { date: 'asc' } },

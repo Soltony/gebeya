@@ -9,6 +9,7 @@ import { calculateTotalRepayable } from '@/lib/loan-calculator';
 import { redirect } from 'next/navigation';
 import { requireMiniAppAuthContext } from '@/lib/miniapp-auth';
 import { getAsOfDate } from '@/lib/date-utils';
+import { getPhoneNumbersForAccount } from '@/lib/account-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,9 +26,12 @@ async function getLoanDetails(loanId: string, borrowerId: string): Promise<LoanD
     try {
         if (!loanId) return null;
 
+        // Get all phone numbers linked to this account to support phone number changes
+        const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
         const [loan, taxConfigs] = await Promise.all([
             prisma.loan.findFirst({
-                where: { id: loanId, borrowerId },
+                where: { id: loanId, borrowerId: { in: allPhoneNumbersForAccount } },
                 include: {
                     product: {
                         include: {

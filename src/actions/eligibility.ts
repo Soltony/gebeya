@@ -10,6 +10,7 @@
 import prisma from '@/lib/prisma';
 import { getSalaryEntryForProduct, computeAllowedFromSalary } from '@/lib/salary-advance';
 import { evaluateCondition } from '@/lib/utils';
+import { getPhoneNumbersForAccount } from '@/lib/account-utils';
 import type { ScoringParameter as ScoringParameterType } from '@/lib/types';
 import { Loan, LoanProduct, Prisma, RepaymentBehavior } from '@prisma/client';
 
@@ -34,8 +35,12 @@ async function getBorrowerDataForScoring(
         select: { accountNumber: true },
     });
 
+    // Get all phone numbers linked to this account to support phone number changes
+    // This ensures we find provisioned data and account info even after phone number update
+    const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
     const borrowerIdsToFetch = Array.from(
-        new Set([borrowerId, activeAccount?.accountNumber].filter((v): v is string => Boolean(v && String(v).trim())))
+        new Set([...allPhoneNumbersForAccount, activeAccount?.accountNumber].filter((v): v is string => Boolean(v && String(v).trim())))
     );
 
     // Load provisioned data for:
@@ -88,8 +93,12 @@ async function getBorrowerDataForScoring(
         }
     }
     // Merge latest account statement metrics for borrower (if any)
+    // Check all phone numbers linked to this account to find metrics after phone changes
     try {
-        const metric = await prisma.accountStatementMetrics.findFirst({ where: { borrowerId }, orderBy: { computedAt: 'desc' } });
+        const metric = await prisma.accountStatementMetrics.findFirst({
+            where: { borrowerId: { in: allPhoneNumbersForAccount } },
+            orderBy: { computedAt: 'desc' }
+        });
         if (metric) {
             // Expose metric fields as top-level properties for scoring rules
             const m = metric as any;
@@ -108,8 +117,10 @@ async function getBorrowerDataForScoring(
         console.error('Failed to load account statement metrics for scoring:', e);
     }
     
+    // Fetch all previous loans across all phone numbers linked to this account
+    // This ensures credit history is visible even after phone number changes
     const previousLoans = await prisma.loan.findMany({
-        where: { borrowerId },
+        where: { borrowerId: { in: allPhoneNumbersForAccount } },
         select: { repaymentBehavior: true },
     });
 
@@ -119,9 +130,10 @@ async function getBorrowerDataForScoring(
     combinedData['loansEarly'] = previousLoans.filter(l => l.repaymentBehavior === 'EARLY').length;
     
     // Fetch the latest Top-5 repayment transactions (combined across loans) and compute counts by category
+    // Check payments across all phone numbers linked to this account for complete history
     try {
         const recentPayments = await prisma.payment.findMany({
-            where: { loan: { is: { borrowerId: borrowerId } } },
+            where: { loan: { is: { borrowerId: { in: allPhoneNumbersForAccount } } } },
             include: { loan: { select: { dueDate: true } } },
             orderBy: { date: 'desc' },
             take: 5,
@@ -232,9 +244,12 @@ export async function checkLoanEligibility(borrowerId: string, providerId: strin
     
     type LoanWithProduct = Loan & { product: LoanProduct };
     
+    // Get all phone numbers associated with this account to prevent phone number change bypass
+    const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
     const allActiveLoans: LoanWithProduct[] = await prisma.loan.findMany({
         where: {
-            borrowerId: borrowerId,
+            borrowerId: { in: allPhoneNumbersForAccount },
             repaymentStatus: 'Unpaid'
         },
         include: { product: true }

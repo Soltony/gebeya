@@ -11,6 +11,7 @@ import { requireMiniAppAuthContext } from '@/lib/miniapp-auth';
 import { calculateInstallmentPenalty } from '@/lib/installment-penalty';
 import { getAsOfDate } from '@/lib/date-utils';
 import { ensureInstallmentRollover } from '@/lib/installment-rollover';
+import { getPhoneNumbersForAccount } from '@/lib/account-utils';
 
 // Helper function to safely parse JSON from DB
 const safeJsonParse = (jsonString: string | null | undefined, defaultValue: any) => {
@@ -78,10 +79,14 @@ async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
     try {
         if (!borrowerId) return [];
 
+        // Get all phone numbers linked to this account to support phone number changes
+        // This ensures the borrower sees all their loans even after changing their phone number
+        const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
         // Ensure overdue installments are rolled over (merged) so the borrower UI
         // reflects the combined installment amount as soon as a due date passes.
         const loanIds = await prisma.loan.findMany({
-            where: { borrowerId, repaymentStatus: 'Unpaid' },
+            where: { borrowerId: { in: allPhoneNumbersForAccount }, repaymentStatus: 'Unpaid' },
             select: { id: true },
         });
 
@@ -92,7 +97,7 @@ async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
         }
 
         const loans = await prisma.loan.findMany({
-            where: { borrowerId },
+            where: { borrowerId: { in: allPhoneNumbersForAccount } },
             include: {
                 product: {
                     include: {
@@ -201,8 +206,11 @@ export default async function LoanPage({ searchParams }: { searchParams: any }) 
     // Check if borrower has any active (unpaid) loans — if so, default to
     // the dashboard so they can see their outstanding balance / repay.
     // The user can still navigate to the shop via the "Shop BNPL" link (view=shop).
+    // Count across all phone numbers linked to the account so an active loan is
+    // still detected after the borrower changes their phone number.
+    const phoneNumbersForActiveLoanCheck = await getPhoneNumbersForAccount(borrowerId);
     const hasActiveLoan = await prisma.loan.count({
-        where: { borrowerId, repaymentStatus: 'Unpaid' },
+        where: { borrowerId: { in: phoneNumbersForActiveLoanCheck }, repaymentStatus: 'Unpaid' },
     }) > 0;
 
     const forceShop = view === 'shop';

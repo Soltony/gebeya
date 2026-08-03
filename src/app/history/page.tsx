@@ -10,6 +10,7 @@ import { requireMiniAppAuthContext } from '@/lib/miniapp-auth';
 import { calculateInstallmentPenalty } from '@/lib/installment-penalty';
 import { getAsOfDate } from '@/lib/date-utils';
 import { ensureInstallmentRollover } from '@/lib/installment-rollover';
+import { getPhoneNumbersForAccount } from '@/lib/account-utils';
 
 
 const safeJsonParse = (jsonString: string | null | undefined, defaultValue: any) => {
@@ -33,10 +34,13 @@ async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
     try {
         if (!borrowerId) return [];
 
+        // Get all phone numbers linked to this account to support phone number changes
+        const allPhoneNumbersForAccount = await getPhoneNumbersForAccount(borrowerId);
+
         // Ensure overdue installments are rolled over (merged) so the borrower UI
         // reflects the combined installment amount as soon as a due date passes.
         const loanIds = await prisma.loan.findMany({
-            where: { borrowerId, repaymentStatus: 'Unpaid' },
+            where: { borrowerId: { in: allPhoneNumbersForAccount }, repaymentStatus: 'Unpaid' },
             select: { id: true },
         });
 
@@ -48,7 +52,7 @@ async function getLoanHistory(borrowerId: string): Promise<LoanDetails[]> {
 
         const [loans, taxConfigs] = await Promise.all([
             prisma.loan.findMany({
-                where: { borrowerId },
+                where: { borrowerId: { in: allPhoneNumbersForAccount } },
                 include: {
                     product: {
                         include: {
