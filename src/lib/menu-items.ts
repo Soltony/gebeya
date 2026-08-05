@@ -5,6 +5,7 @@ import {
   ShieldCheck,
   FileCog,
   BadgeAlert,
+  Banknote,
   Landmark,
   Download,
   FolderArchive,
@@ -86,6 +87,12 @@ export const allMenuItems: MenuItem[] = [
     path: '/admin/npl',
     label: 'NPL',
     icon: BadgeAlert,
+    roles: ['Super Admin', 'Loan Manager', 'Auditor'],
+  },
+  {
+    path: '/admin/npl-collection',
+    label: 'NPL Collection',
+    icon: Banknote,
     roles: ['Super Admin', 'Loan Manager', 'Auditor'],
   },
   {

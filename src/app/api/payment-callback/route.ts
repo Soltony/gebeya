@@ -4,6 +4,7 @@ import { calculateTotalRepayable } from "@/lib/loan-calculator";
 import { getAsOfDate } from "@/lib/date-utils";
 import { createAuditLog } from "@/lib/audit-log";
 import { applyBnplRepayment } from "@/lib/bnpl-repayment";
+import { syncCbsDeletionForBorrower } from "@/actions/cbs-npl";
 
 // A payment intent the gateway has not confirmed within this window is dead;
 // refusing to process it prevents a late/replayed callback from applying a
@@ -447,6 +448,10 @@ export async function POST(request: NextRequest) {
       callbackLogId,
       loanId: updatedLoan?.id,
     });
+
+    // Stop CBS NPL monitoring once this borrower has nothing unpaid left.
+    // Best-effort and self-gating: it no-ops while unpaid loans remain.
+    void syncCbsDeletionForBorrower(borrowerId, { source: "MANUAL" });
     return NextResponse.json(
       { message: "Payment confirmed and updated." },
       { status: 200 }

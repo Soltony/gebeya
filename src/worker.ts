@@ -19,6 +19,12 @@ const REPAYMENT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const PROVIDER_DISTRIBUTION_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const INTEREST_ACCRUAL_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const PENALTY_ACCRUAL_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const NPL_STATUS_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CBS_NPL_UPLOAD_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CBS_NPL_RETRY_INTERVAL_MS =
+  (Number(process.env.NPL_RETRY_INTERVAL_MINUTES) > 0
+    ? Math.floor(Number(process.env.NPL_RETRY_INTERVAL_MINUTES))
+    : 5) * 60 * 1000; // 5 minutes
 
 async function runProviderDistributionServiceLoop() {
   while (true) {
@@ -71,6 +77,69 @@ async function runPenaltyAccrualServiceLoop() {
     }
     logger.info(`Penalty accrual service sleeping for ${Math.round(PENALTY_ACCRUAL_INTERVAL_MS / (60 * 60 * 1000))}h`);
     await new Promise(resolve => setTimeout(resolve, PENALTY_ACCRUAL_INTERVAL_MS));
+  }
+}
+
+async function runNplStatusServiceLoop() {
+  logger.info('NPL status update service started');
+  while (true) {
+    try {
+      logger.info('Starting daily NPL status update scheduled run');
+      const { updateNplStatusJob } = await import('./actions/npl');
+      const result = await updateNplStatusJob();
+      logger.info(`Daily NPL status update finished success=${result.success} updated=${result.updatedCount}`);
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during NPL status update cycle:`, error);
+      logger.error(`Error during NPL status update cycle: ${String(error)}`);
+    }
+    logger.info(`NPL status update service sleeping for ${Math.round(NPL_STATUS_INTERVAL_MS / (60 * 60 * 1000))}h`);
+    await new Promise((resolve) => setTimeout(resolve, NPL_STATUS_INTERVAL_MS));
+  }
+}
+
+async function runCbsNplUploadServiceLoop() {
+  logger.info('CBS NPL upload service started');
+  while (true) {
+    try {
+      // Flag newly overdue borrowers first so the upload always pushes a fresh list.
+      try {
+        const { updateNplStatusJob } = await import('./actions/npl');
+        const nplResult = await updateNplStatusJob();
+        logger.info(`Pre-upload NPL status update finished success=${nplResult.success} updated=${nplResult.updatedCount}`);
+      } catch (error) {
+        logger.error(`Pre-upload NPL status update failed: ${String(error)}`);
+      }
+      logger.info('Starting daily CBS NPL bulk upload scheduled run');
+      const { uploadNplListToCbs } = await import('./actions/cbs-npl');
+      const result = await uploadNplListToCbs({ source: 'SCHEDULED' });
+      logger.info(
+        `Daily CBS NPL upload finished success=${result.success} batch=${result.batchId} sent=${result.accountsSentCount} inserted=${result.insertedCount ?? 'n/a'} existing=${result.alreadyExistsCount ?? 'n/a'}`,
+      );
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during CBS NPL upload cycle:`, error);
+      logger.error(`Error during CBS NPL upload cycle: ${String(error)}`);
+    }
+    logger.info(`CBS NPL upload service sleeping for ${Math.round(CBS_NPL_UPLOAD_INTERVAL_MS / (60 * 60 * 1000))}h`);
+    await new Promise((resolve) => setTimeout(resolve, CBS_NPL_UPLOAD_INTERVAL_MS));
+  }
+}
+
+async function runCbsNplRetryServiceLoop() {
+  logger.info('CBS NPL retry service started');
+  while (true) {
+    try {
+      const { retryFailedCreditNotificationsOnce } = await import('./actions/cbs-npl');
+      const result = await retryFailedCreditNotificationsOnce();
+      if (result.eligible > 0) {
+        logger.info(
+          `CBS NPL retry sweep finished scanned=${result.scanned} eligible=${result.eligible} retried=${result.retried} collected=${result.collected} stillFailing=${result.stillFailing}`,
+        );
+      }
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during CBS NPL retry cycle:`, error);
+      logger.error(`Error during CBS NPL retry cycle: ${String(error)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, CBS_NPL_RETRY_INTERVAL_MS));
   }
 }
 
@@ -134,6 +203,40 @@ async function main() {
           await updateNplStatusJob();
         }
         process.exit(0);
+        break;
+      case 'npl-service':
+        logger.info('Starting npl-service long-running loop');
+        await runNplStatusServiceLoop();
+        break;
+      case 'cbs-npl-upload':
+        logger.info('Running one-off cbs-npl-upload');
+        {
+          const { uploadNplListToCbs } = await import('./actions/cbs-npl');
+          const result = await uploadNplListToCbs({ source: 'SCHEDULED' });
+          logger.info(
+            `One-off CBS NPL upload finished success=${result.success} batch=${result.batchId} sent=${result.accountsSentCount}`,
+          );
+        }
+        process.exit(0);
+        break;
+      case 'cbs-npl-upload-service':
+        logger.info('Starting cbs-npl-upload-service long-running loop');
+        await runCbsNplUploadServiceLoop();
+        break;
+      case 'cbs-npl-retry':
+        logger.info('Running one-off cbs-npl-retry sweep');
+        {
+          const { retryFailedCreditNotificationsOnce } = await import('./actions/cbs-npl');
+          const result = await retryFailedCreditNotificationsOnce();
+          logger.info(
+            `One-off CBS NPL retry sweep finished scanned=${result.scanned} eligible=${result.eligible} retried=${result.retried} collected=${result.collected} stillFailing=${result.stillFailing}`,
+          );
+        }
+        process.exit(0);
+        break;
+      case 'cbs-npl-retry-service':
+        logger.info('Starting cbs-npl-retry-service long-running loop');
+        await runCbsNplRetryServiceLoop();
         break;
       default:
         console.error(`Error: Unknown task "${task}".`);

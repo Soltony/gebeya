@@ -15,6 +15,7 @@ const permissions = {
     tax: { create: true, read: true, update: true, delete: true },
     approvals: { create: true, read: true, update: true, delete: true },
     npl: { create: true, read: true, update: true, delete: true },
+    "npl-collection": { create: true, read: true, update: true, delete: true },
     "audit-logs": { create: true, read: true, update: true, delete: true },
   },
   loanProvider: {
@@ -37,6 +38,7 @@ const permissions = {
     tax: { create: false, read: true, update: false, delete: false },
     approvals: { create: false, read: false, update: false, delete: false },
     npl: { create: false, read: false, update: false, delete: false },
+    "npl-collection": { create: false, read: false, update: false, delete: false },
     "audit-logs": { create: false, read: false, update: false, delete: false },
   },
   reconciliation: {
@@ -59,6 +61,7 @@ const permissions = {
     tax: { create: false, read: true, update: false, delete: false },
     approvals: { create: false, read: false, update: false, delete: false },
     npl: { create: false, read: false, update: false, delete: false },
+    "npl-collection": { create: false, read: false, update: false, delete: false },
     "audit-logs": { create: false, read: false, update: false, delete: false },
   },
 };

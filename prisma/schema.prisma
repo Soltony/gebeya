@@ -1056,3 +1056,99 @@ model DeliveryOtp {
 
   @@index([orderId])
 }
+
+// ================================================= //
+//      NPL COLLECTION (CBS DIGITAL LOAN REPAYMENT)  //
+// ================================================= //
+
+// One row per bulk upload of NPL account numbers to the Core Banking System
+// for monitoring. The CBS watches those accounts and notifies us when a credit
+// lands, which is what drives the auto-debit repayment flow.
+model NplCbsUploadBatch {
+  id                 String    @id @default(cuid())
+  triggeredByUserId  String? // null when triggered by the scheduled worker
+  source             String    @default("MANUAL") // MANUAL | SCHEDULED
+  status             String    @default("PENDING") // PENDING | SUCCESS | FAILED
+  // Number of accounts we sent (clamped to what we actually pushed).
+  accountsSentCount  Int       @default(0)
+  // Verbatim figures echoed back by the CBS upload endpoint.
+  totalReceived      Int?
+  insertedCount      Int?
+  alreadyExistsCount Int?
+  httpStatus         Int?
+  errorMessage       String?   @db.NVarChar(Max)
+  // JSON array string of account numbers actually included in the upload.
+  accountNumbers     String    @db.NVarChar(Max)
+  // JSON request and response bodies for traceability.
+  requestPayload     String?   @db.NVarChar(Max)
+  responsePayload    String?   @db.NVarChar(Max)
+  startedAt          DateTime  @default(now())
+  finishedAt         DateTime?
+
+  @@index([status])
+  @@index([startedAt])
+}
+
+// One row per credit notification received from the CBS for a previously
+// uploaded NPL account. The notification triggers an immediate auto-repay
+// attempt against the CBS /repay endpoint and a corresponding internal
+// ledger posting via the standard BNPL repayment pipeline.
+model NplCreditNotification {
+  id                 String    @id @default(cuid())
+  // Notification identity / idempotency.
+  externalReference  String?   @unique // optional id sent by the CBS, used for dedup if present
+  correlationId      String    @unique // uuid we send back to CBS on /repay (also serves as our internal idempotency key)
+  // Inbound payload fields
+  accountNumber      String
+  creditedAmount     Float
+  providerId         String? // CBS provider code (e.g. PRO0001)
+  rawPayload         String    @db.NVarChar(Max)
+  // Resolution to internal entities (best-effort).
+  borrowerId         String?
+  loanId             String?
+  paymentId          String?
+  // Repay result.
+  processStatus      String    @default("PENDING") // PENDING | REPAID | PARTIAL_REPAID | NO_OUTSTANDING | UNMATCHED_ACCOUNT | DUPLICATE | FAILED
+  resultMessage      String?   @db.NVarChar(Max)
+  // Echo of /repay response.
+  repayHttpStatus    Int?
+  repayTransactionId String?
+  repayDebitAmount   Float?
+  repayDebitAccount  String?
+  repayCreditAccount String?
+  repayResponse      String?   @db.NVarChar(Max)
+  // Number of attempts (manual retry support).
+  attempts           Int       @default(0)
+  lastAttemptAt      DateTime?
+  receivedAt         DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([accountNumber])
+  @@index([processStatus])
+  @@index([receivedAt])
+  @@index([loanId])
+}
+
+// One row per attempt to remove an account from CBS NPL monitoring via
+// DELETE /api/v1/notification/delete/{accountNumber}. Deletions fire
+// automatically when a borrower exits NPL (loan fully repaid) and can also
+// be triggered manually from the NPL Collection admin page to clean up
+// accounts that left NPL before the delete integration existed.
+model NplCbsDeletion {
+  id                String    @id @default(cuid())
+  accountNumber     String
+  source            String    @default("MANUAL") // MANUAL | AUTO
+  status            String    @default("PENDING") // PENDING | SUCCESS | FAILED
+  httpStatus        Int?
+  reason            String?   @db.NVarChar(Max)
+  borrowerId        String?
+  triggeredByUserId String? // null when triggered by the auto-repay worker
+  responsePayload   String?   @db.NVarChar(Max)
+  errorMessage      String?   @db.NVarChar(Max)
+  createdAt         DateTime  @default(now())
+  finishedAt        DateTime?
+
+  @@index([accountNumber])
+  @@index([status])
+  @@index([createdAt])
+}
