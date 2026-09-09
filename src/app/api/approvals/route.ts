@@ -282,6 +282,179 @@ async function applyEligibilityList(change: any, data: any) {
   });
 }
 
+/**
+ * Replace an item's option groups without destroying the rows that past
+ * orders point at.
+ *
+ * Deleting and recreating them is not safe: ItemOptionGroup cascades into
+ * ItemOptionValue, and OrderItemOptionSelection.optionValueId is a NoAction
+ * foreign key, so any item that has ever been ordered with an option selected
+ * makes the delete fail outright. It also mints fresh value ids on every
+ * approval, orphaning the combination inventory rows keyed on them.
+ *
+ * Groups are matched by name and values by label, because the edit form
+ * resubmits the attributes without their ids. An approval that leaves the
+ * attributes alone therefore becomes a no-op. Anything genuinely removed is
+ * deleted when nothing references it and archived otherwise.
+ */
+async function reconcileItemOptionGroups(itemId: string, optionGroups: any[]) {
+  const existingGroups = await prisma.itemOptionGroup.findMany({
+    where: { itemId },
+    include: { values: true },
+  });
+
+  // Local mirror of the groups so newly created ones take part in matching.
+  const groups = existingGroups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    values: g.values.map((v) => ({ id: v.id, label: v.label, priceDelta: v.priceDelta, status: v.status })),
+  }));
+
+  const keptGroupIds = new Set<string>();
+  const keptValueIds = new Set<string>();
+
+  for (const g of optionGroups || []) {
+    if (!g?.name) continue;
+
+    let group = groups.find((eg) => eg.name === g.name && !keptGroupIds.has(eg.id));
+    if (group) {
+      await prisma.itemOptionGroup.update({
+        where: { id: group.id },
+        data: { status: "ACTIVE" },
+      });
+    } else {
+      const created = await prisma.itemOptionGroup.create({
+        data: { itemId, name: g.name },
+      });
+      group = { id: created.id, name: created.name, values: [] };
+      groups.push(group);
+    }
+    keptGroupIds.add(group.id);
+
+    for (const v of g.values || []) {
+      if (!v?.label) continue;
+      const parsed = parseFloat(v.priceDelta ?? "0");
+      const priceDelta = Number.isFinite(parsed) ? parsed : 0;
+
+      const existingValue = group.values.find(
+        (ev) => ev.label === v.label && !keptValueIds.has(ev.id)
+      );
+      if (existingValue) {
+        keptValueIds.add(existingValue.id);
+        if (existingValue.priceDelta !== priceDelta || existingValue.status !== "ACTIVE") {
+          await prisma.itemOptionValue.update({
+            where: { id: existingValue.id },
+            data: { priceDelta, status: "ACTIVE" },
+          });
+        }
+      } else {
+        const created = await prisma.itemOptionValue.create({
+          data: { groupId: group.id, label: v.label, priceDelta },
+        });
+        keptValueIds.add(created.id);
+        group.values.push({ id: created.id, label: created.label, priceDelta, status: "ACTIVE" });
+      }
+    }
+  }
+
+  const staleValueIds = groups
+    .flatMap((g) => g.values)
+    .filter((v) => !keptValueIds.has(v.id))
+    .map((v) => v.id);
+
+  // A value an order selected has to stay in place; archiving keeps it out of
+  // the shop without breaking the order's history.
+  const orderedValueIds = new Set<string>(
+    staleValueIds.length
+      ? (
+          await prisma.orderItemOptionSelection.findMany({
+            where: { optionValueId: { in: staleValueIds } },
+            select: { optionValueId: true },
+          })
+        ).map((s) => s.optionValueId)
+      : []
+  );
+
+  const deletableValueIds = staleValueIds.filter((id) => !orderedValueIds.has(id));
+  const archivableValueIds = staleValueIds.filter((id) => orderedValueIds.has(id));
+  if (deletableValueIds.length) {
+    await prisma.itemOptionValue.deleteMany({ where: { id: { in: deletableValueIds } } });
+  }
+  if (archivableValueIds.length) {
+    await prisma.itemOptionValue.updateMany({
+      where: { id: { in: archivableValueIds } },
+      data: { status: "ARCHIVED" },
+    });
+  }
+
+  for (const group of groups) {
+    if (keptGroupIds.has(group.id)) continue;
+    // Deleting the group would cascade into a value an order still needs.
+    if (group.values.some((v) => orderedValueIds.has(v.id))) {
+      await prisma.itemOptionGroup.update({
+        where: { id: group.id },
+        data: { status: "ARCHIVED" },
+      });
+    } else {
+      await prisma.itemOptionGroup.delete({ where: { id: group.id } });
+    }
+  }
+}
+
+/**
+ * Same reconciliation for variants: OrderItem.variantId is also a NoAction
+ * foreign key, so a variant that has been ordered cannot be deleted.
+ */
+async function reconcileItemVariants(itemId: string, variants: any[]) {
+  const existing = await prisma.itemVariant.findMany({ where: { itemId } });
+  const keptIds = new Set<string>();
+
+  for (const v of variants || []) {
+    if (!v?.name) continue;
+    const parsed = parseFloat(v.price);
+    const data = {
+      size: v.size || null,
+      color: v.color || null,
+      material: v.material || null,
+      price: Number.isFinite(parsed) ? parsed : 0,
+      status: v.status || "ACTIVE",
+    };
+
+    const match = existing.find((e) => e.name === v.name && !keptIds.has(e.id));
+    if (match) {
+      keptIds.add(match.id);
+      await prisma.itemVariant.update({ where: { id: match.id }, data });
+    } else {
+      const created = await prisma.itemVariant.create({ data: { itemId, name: v.name, ...data } });
+      keptIds.add(created.id);
+    }
+  }
+
+  const staleIds = existing.filter((e) => !keptIds.has(e.id)).map((e) => e.id);
+  if (!staleIds.length) return;
+
+  const orderedIds = new Set<string>(
+    (
+      await prisma.orderItem.findMany({
+        where: { variantId: { in: staleIds } },
+        select: { variantId: true },
+      })
+    ).map((o) => o.variantId as string)
+  );
+
+  const deletableIds = staleIds.filter((id) => !orderedIds.has(id));
+  const archivableIds = staleIds.filter((id) => orderedIds.has(id));
+  if (deletableIds.length) {
+    await prisma.itemVariant.deleteMany({ where: { id: { in: deletableIds } } });
+  }
+  if (archivableIds.length) {
+    await prisma.itemVariant.updateMany({
+      where: { id: { in: archivableIds } },
+      data: { status: "ARCHIVED" },
+    });
+  }
+}
+
 // Main function to apply an approved change
 async function applyChange(
   change: any,
@@ -1549,41 +1722,13 @@ async function applyChange(
           where: { id: entityId },
           data: itemData,
         });
-        // Replace option groups if provided
+        // Reconcile rather than delete-and-recreate: past orders hold NoAction
+        // foreign keys into option values and variants.
         if (optionGroups) {
-          await prisma.itemOptionGroup.deleteMany({ where: { itemId: entityId } });
-          for (const g of optionGroups) {
-            if (!g.name) continue;
-            await prisma.itemOptionGroup.create({
-              data: {
-                itemId: entityId as string,
-                name: g.name,
-                values: g.values?.length ? {
-                  create: g.values.map((v: any) => ({
-                    label: v.label,
-                    priceDelta: parseFloat(v.priceDelta || '0'),
-                  })),
-                } : undefined,
-              },
-            });
-          }
+          await reconcileItemOptionGroups(entityId as string, optionGroups);
         }
-        // Replace variants if provided
         if (variants) {
-          await prisma.itemVariant.deleteMany({ where: { itemId: entityId } });
-          if (variants.length > 0) {
-            await prisma.itemVariant.createMany({
-              data: variants.map((v: any) => ({
-                itemId: entityId as string,
-                name: v.name,
-                size: v.size || null,
-                color: v.color || null,
-                material: v.material || null,
-                price: parseFloat(v.price),
-                status: v.status || 'ACTIVE',
-              })),
-            });
-          }
+          await reconcileItemVariants(entityId as string, variants);
         }
       } else if (changeType === "DELETE") {
         await prisma.item.delete({ where: { id: entityId } });

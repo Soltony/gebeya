@@ -1,0 +1,22 @@
+BEGIN TRY
+
+BEGIN TRAN;
+
+-- AlterTable
+ALTER TABLE [dbo].[ItemOptionGroup] ADD [status] NVARCHAR(1000) NOT NULL CONSTRAINT [ItemOptionGroup_status_df] DEFAULT 'ACTIVE';
+
+-- AlterTable
+ALTER TABLE [dbo].[ItemOptionValue] ADD [status] NVARCHAR(1000) NOT NULL CONSTRAINT [ItemOptionValue_status_df] DEFAULT 'ACTIVE';
+
+COMMIT TRAN;
+
+END TRY
+BEGIN CATCH
+
+IF @@TRANCOUNT > 0
+BEGIN
+    ROLLBACK TRAN;
+END;
+THROW
+
+END CATCH

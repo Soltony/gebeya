@@ -46,7 +46,15 @@ export async function GET(req: NextRequest) {
 
     const items = await prisma.item.findMany({
       where,
-      include: { merchant: true, category: true, variants: true, optionGroups: { include: { values: true } } },
+      include: {
+        merchant: true,
+        category: true,
+        variants: true,
+        optionGroups: {
+          where: { status: 'ACTIVE' },
+          include: { values: { where: { status: 'ACTIVE' } } },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return NextResponse.json(items);
@@ -132,7 +140,15 @@ export async function PUT(req: NextRequest) {
 
     const existing = await prisma.item.findUnique({
       where: { id },
-      include: { merchant: true, category: true, variants: true, optionGroups: { include: { values: true } } },
+      include: {
+        merchant: true,
+        category: true,
+        variants: true,
+        optionGroups: {
+          where: { status: 'ACTIVE' },
+          include: { values: { where: { status: 'ACTIVE' } } },
+        },
+      },
     });
     if (!existing) return NextResponse.json({ error: 'Item not found' }, { status: 404 });
 
@@ -168,8 +184,13 @@ export async function PUT(req: NextRequest) {
               requiresMerchantAvailabilityConfirmation !== undefined
                 ? !!requiresMerchantAvailabilityConfirmation
                 : existing.requiresMerchantAvailabilityConfirmation,
-            variants: variants || [],
-            optionGroups: optionGroups || [],
+            // Omit these when the caller did not send them. JSON.stringify
+            // drops the undefined keys, and the approval step reads an absent
+            // key as "leave alone". Defaulting to [] instead would wipe every
+            // variant and option group of an item whenever a form that does
+            // not manage them is saved.
+            variants: variants ?? undefined,
+            optionGroups: optionGroups ?? undefined,
           },
         }),
         createdById: user.id,

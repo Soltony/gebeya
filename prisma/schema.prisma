@@ -843,6 +843,10 @@ model ItemOptionGroup {
   itemId    String
   item      Item              @relation(fields: [itemId], references: [id], onDelete: Cascade)
   name      String
+  // ACTIVE or ARCHIVED. A group a past order still points at is archived
+  // rather than deleted, because OrderItemOptionSelection.optionValueId is a
+  // NoAction foreign key that rejects the delete.
+  status    String            @default("ACTIVE")
   values    ItemOptionValue[]
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
@@ -856,6 +860,8 @@ model ItemOptionValue {
   group      ItemOptionGroup             @relation(fields: [groupId], references: [id], onDelete: Cascade)
   label      String
   priceDelta Float                       @default(0)
+  // ACTIVE or ARCHIVED, see ItemOptionGroup.status.
+  status     String                      @default("ACTIVE")
   selections OrderItemOptionSelection[]
   createdAt  DateTime                    @default(now())
   updatedAt  DateTime                    @updatedAt

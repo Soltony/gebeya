@@ -11,7 +11,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         merchant: { select: { id: true, name: true, status: true, bnplEnabled: true } },
         category: { select: { id: true, name: true } },
         variants: { where: { status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } },
-        optionGroups: { include: { values: true }, orderBy: { createdAt: 'asc' } },
+        optionGroups: {
+          where: { status: 'ACTIVE' },
+          include: { values: { where: { status: 'ACTIVE' } } },
+          orderBy: { createdAt: 'asc' },
+        },
         discountRules: { where: { status: 'ACTIVE' } },
       },
     });
