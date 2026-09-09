@@ -20,6 +20,18 @@ function normalizeOptionGroups(groups: any[]): Array<{ name: string; values: Arr
     .sort((a: any, b: any) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Parses a price coming from a JSON body into a finite number.
+ * Returns null for empty strings and non-numeric values so an invalid price is
+ * never parsed to NaN - NaN serialises to `null` in the pending-change payload
+ * and later breaks `prisma.item.update` (price is a required Float).
+ */
+function parsePrice(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export async function GET(req: NextRequest) {
   const user = await getUserFromSession();
   if (!user) return NextResponse.json({ error: 'Not authorized' }, { status: 403 });
@@ -52,13 +64,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    let { merchantId, categoryId, name, description, price, imageUrl, videoUrl, status, sellingOption, variants, optionGroups } = body;
+    let { merchantId, categoryId, name, description, price, imageUrl, videoUrl, status, sellingOption, requiresMerchantAvailabilityConfirmation, variants, optionGroups } = body;
 
     // Merchant users can only create items for their own merchant
     if (user.merchantId) merchantId = user.merchantId;
 
-    if (!merchantId || !categoryId || !name || price == null) {
-      return NextResponse.json({ error: 'merchantId, categoryId, name, and price are required' }, { status: 400 });
+    const parsedPrice = parsePrice(price);
+    if (!merchantId || !categoryId || !name || parsedPrice == null) {
+      return NextResponse.json({ error: 'merchantId, categoryId, name, and a valid price are required' }, { status: 400 });
     }
 
     // Validate image(s) if provided
@@ -75,11 +88,14 @@ export async function POST(req: NextRequest) {
             categoryId,
             name,
             description: description || null,
-            price: parseFloat(price),
+            price: parsedPrice,
             imageUrl: imageUrl || null,
             videoUrl: videoUrl || null,
             status: status || 'ACTIVE',
             sellingOption: sellingOption || 'BNPL_ONLY',
+            // Defaults to true (matching the column default) when the caller omits it.
+            requiresMerchantAvailabilityConfirmation:
+              requiresMerchantAvailabilityConfirmation === undefined ? true : !!requiresMerchantAvailabilityConfirmation,
             variants: variants || [],
             optionGroups: optionGroups || [],
           },
@@ -104,8 +120,15 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { id, merchantId, categoryId, name, description, price, imageUrl, videoUrl, status, sellingOption, variants, optionGroups } = body;
+    const { id, merchantId, categoryId, name, description, price, imageUrl, videoUrl, status, sellingOption, requiresMerchantAvailabilityConfirmation, variants, optionGroups } = body;
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
+
+    // Reject an invalid price up front instead of storing NaN (serialised as
+    // null) in the pending-change payload.
+    const parsedPrice = parsePrice(price);
+    if (price !== undefined && price !== null && parsedPrice == null) {
+      return NextResponse.json({ error: 'Price must be a valid number' }, { status: 400 });
+    }
 
     const existing = await prisma.item.findUnique({
       where: { id },
@@ -136,11 +159,15 @@ export async function PUT(req: NextRequest) {
             categoryId: categoryId || existing.categoryId,
             name: name || existing.name,
             description: description ?? existing.description,
-            price: price != null ? parseFloat(price) : existing.price,
+            price: parsedPrice ?? existing.price,
             imageUrl: imageUrl ?? existing.imageUrl,
             videoUrl: videoUrl ?? existing.videoUrl,
             status: status || existing.status,
             sellingOption: sellingOption || existing.sellingOption,
+            requiresMerchantAvailabilityConfirmation:
+              requiresMerchantAvailabilityConfirmation !== undefined
+                ? !!requiresMerchantAvailabilityConfirmation
+                : existing.requiresMerchantAvailabilityConfirmation,
             variants: variants || [],
             optionGroups: optionGroups || [],
           },

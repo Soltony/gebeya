@@ -1520,19 +1520,34 @@ async function applyChange(
         });
       } else if (changeType === "UPDATE") {
         const { variants, optionGroups, ...updateFields } = data.updated;
+        // Only send fields that are actually present. Required columns must
+        // never be set to null: an older payload can carry price: null (an
+        // empty price used to be parsed to NaN and serialised as null), which
+        // makes prisma.item.update fail with a confusing
+        // "Unknown argument `merchantId`" validation error.
+        const itemData: any = {};
+        for (const key of ["merchantId", "categoryId", "name", "status", "sellingOption"]) {
+          if (updateFields[key] !== undefined && updateFields[key] !== null) {
+            itemData[key] = updateFields[key];
+          }
+        }
+        for (const key of ["description", "imageUrl", "videoUrl"]) {
+          if (key in updateFields) itemData[key] = updateFields[key] ?? null;
+        }
+        const nextPrice = Number(updateFields.price);
+        if (updateFields.price !== null && updateFields.price !== undefined && Number.isFinite(nextPrice)) {
+          itemData.price = nextPrice;
+        }
+        if (
+          updateFields.requiresMerchantAvailabilityConfirmation !== undefined &&
+          updateFields.requiresMerchantAvailabilityConfirmation !== null
+        ) {
+          itemData.requiresMerchantAvailabilityConfirmation =
+            !!updateFields.requiresMerchantAvailabilityConfirmation;
+        }
         await prisma.item.update({
           where: { id: entityId },
-          data: {
-            merchantId: updateFields.merchantId,
-            categoryId: updateFields.categoryId,
-            name: updateFields.name,
-            description: updateFields.description,
-            price: updateFields.price,
-            imageUrl: updateFields.imageUrl,
-            videoUrl: updateFields.videoUrl,
-            status: updateFields.status,
-            sellingOption: updateFields.sellingOption,
-          },
+          data: itemData,
         });
         // Replace option groups if provided
         if (optionGroups) {

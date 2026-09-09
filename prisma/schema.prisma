@@ -810,6 +810,7 @@ model Item {
   sellingOption   String           @default("BNPL_ONLY")
   status          String           @default("ACTIVE")
   stockQuantity   Int              @default(0)
+  requiresMerchantAvailabilityConfirmation Boolean @default(true)
   variants        ItemVariant[]
   optionGroups    ItemOptionGroup[]
   discountRules   DiscountRule[]

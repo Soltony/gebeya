@@ -38,6 +38,7 @@ const FIELD_LABELS: Record<string, string> = {
   price: 'Price (ETB)',
   imageUrl: 'Images',
   videoUrl: 'Video URL',
+  requiresMerchantAvailabilityConfirmation: 'Merchant Confirmation Required',
   sellingOption: 'Selling Option',
   currency: 'Currency',
   stockQuantity: 'Stock Quantity',

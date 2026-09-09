@@ -39,6 +39,7 @@ export default function NewItemPage() {
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [videoUrl, setVideoUrl] = useState('');
+  const [requiresMerchantAvailabilityConfirmation, setRequiresMerchantAvailabilityConfirmation] = useState(true);
 
   // Determine if the selected merchant has BNPL enabled
   const selectedMerchant = merchants.find((m: any) => String(m.id) === String(merchantId));
@@ -201,6 +202,7 @@ export default function NewItemPage() {
           videoUrl: videoUrl || null,
           status,
           sellingOption,
+          requiresMerchantAvailabilityConfirmation,
           optionGroups: optionGroups.length > 0 ? optionGroups : undefined,
         }),
       });
@@ -374,6 +376,21 @@ export default function NewItemPage() {
             <div>
               <Label>Product video URL (YouTube, TikTok, etc.)</Label>
               <Input value={videoUrl} onChange={e => setVideoUrl(e.target.value)} placeholder="https://youtube.com/..." />
+            </div>
+            <div className="flex items-center space-x-2 pt-8">
+              <Checkbox
+                id="requiresConfirmation"
+                checked={requiresMerchantAvailabilityConfirmation}
+                onCheckedChange={(checked) => setRequiresMerchantAvailabilityConfirmation(!!checked)}
+              />
+              <div className="grid gap-1.5 leading-none">
+                <Label htmlFor="requiresConfirmation" className="text-sm font-medium leading-none cursor-pointer">
+                  Require merchant availability confirmation
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  If enabled, the merchant must confirm the item is in stock before the order proceeds.
+                </p>
+              </div>
             </div>
           </div>
 

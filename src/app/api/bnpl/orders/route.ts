@@ -4,6 +4,8 @@ import { calculateTotalRepayable, calculateInclusiveTax } from '@/lib/loan-calcu
 import { addDays } from 'date-fns';
 import { getDiscountEffectiveAmount, isDiscountActive, pickBestDiscount } from '@/lib/discount-utils';
 import { areDisbursementsEnabled } from '@/lib/disbursement-control';
+import { validateBorrowerEligibility } from '@/actions/borrower-validation';
+import { getUserFromSession } from '@/lib/user';
 
 export async function GET(req: NextRequest) {
   try {
@@ -477,6 +479,20 @@ export async function POST(req: NextRequest) {
       create: { id: borrowerId },
     });
 
+    // Enforce eligibility before creating a BNPL order. A borrower with an
+    // active BNPL order (or other outstanding financing) cannot open another.
+    // Direct payments carry no credit exposure and are not gated.
+    if (!isDirectPayment) {
+      const user = await getUserFromSession();
+      const eligibility = await validateBorrowerEligibility(borrowerId, user?.id);
+      if (!eligibility.isEligible) {
+        return NextResponse.json({
+          error: eligibility.reason,
+          details: eligibility.activeFinancing,
+        }, { status: 403 });
+      }
+    }
+
     // ── Create a LoanApplication with PENDING_DELIVERY status (BNPL only) ──
     // No loan is created yet — that happens on delivery confirmation.
     let loanApplication: any = null;
@@ -491,6 +507,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    let requiresConfirmation = false;
     let totalAmount = 0;
     const orderItemsData: any[] = [];
     const orderItemScopes: Array<{ merchantId: string | null; categoryId: string | null }> = [];
@@ -503,6 +520,12 @@ export async function POST(req: NextRequest) {
 
       if (!item || item.status !== 'ACTIVE') {
         return NextResponse.json({ error: `Item ${orderItem.itemId} not found or inactive` }, { status: 400 });
+      }
+
+      // If any item in the order needs the merchant to confirm stock, the whole
+      // order waits for that confirmation before moving to delivery.
+      if (item.requiresMerchantAvailabilityConfirmation) {
+        requiresConfirmation = true;
       }
 
       let unitPrice = item.price;
@@ -576,7 +599,7 @@ export async function POST(req: NextRequest) {
         loanApplicationId: loanApplication?.id || null,
         totalAmount: Math.max(0, totalAmount),
         paymentType: isDirectPayment ? 'DIRECT' : 'BNPL',
-        status: 'PENDING_MERCHANT_CONFIRMATION',
+        status: requiresConfirmation ? 'PENDING_MERCHANT_CONFIRMATION' : 'ON_DELIVERY',
         orderItems: { create: orderItemsData },
       },
       include: {
