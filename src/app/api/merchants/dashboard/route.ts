@@ -97,7 +97,7 @@ export async function GET() {
       .slice(0, 5);
 
     // Items count
-    const totalItems = await prisma.item.count({ where: { merchantId } });
+    const totalItems = await prisma.item.count({ where: { merchantId, status: { not: 'DELETED' } } });
     const activeItems = await prisma.item.count({ where: { merchantId, status: 'ACTIVE' } });
 
     // Recent orders (last 10)

@@ -455,6 +455,31 @@ async function reconcileItemVariants(itemId: string, variants: any[]) {
   }
 }
 
+/**
+ * Remove an item.
+ *
+ * OrderItem.itemId is a NoAction foreign key, so an item that has been ordered
+ * cannot be deleted. That constraint is doing the right thing: OrderItem keeps
+ * no snapshot of the name or the item it was bought from, so a hard delete
+ * would strip past orders of what was actually sold, and the cascades would
+ * take the item's inventory and discount rules with it.
+ *
+ * An ordered item is therefore marked DELETED, a status every listing filters
+ * out. An item nothing has ordered is deleted outright, and its variants,
+ * options, inventory and discount rules cascade away with it.
+ */
+async function deleteOrArchiveItem(itemId: string) {
+  const orderedCount = await prisma.orderItem.count({ where: { itemId } });
+  if (orderedCount > 0) {
+    await prisma.item.update({
+      where: { id: itemId },
+      data: { status: "DELETED" },
+    });
+    return;
+  }
+  await prisma.item.delete({ where: { id: itemId } });
+}
+
 // Main function to apply an approved change
 async function applyChange(
   change: any,
@@ -1693,6 +1718,15 @@ async function applyChange(
         });
       } else if (changeType === "UPDATE") {
         const { variants, optionGroups, ...updateFields } = data.updated;
+        // A delete approved after this change was raised leaves the item as
+        // DELETED. Applying the update would silently bring it back.
+        const currentItem = await prisma.item.findUnique({
+          where: { id: entityId },
+          select: { status: true },
+        });
+        if (!currentItem || currentItem.status === "DELETED") {
+          throw new Error("This item has been deleted and can no longer be updated");
+        }
         // Only send fields that are actually present. Required columns must
         // never be set to null: an older payload can carry price: null (an
         // empty price used to be parsed to NaN and serialised as null), which
@@ -1731,7 +1765,7 @@ async function applyChange(
           await reconcileItemVariants(entityId as string, variants);
         }
       } else if (changeType === "DELETE") {
-        await prisma.item.delete({ where: { id: entityId } });
+        await deleteOrArchiveItem(entityId as string);
       }
       break;
 

@@ -39,7 +39,8 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const merchantId = searchParams.get('merchantId');
-    const where: any = {};
+    // DELETED items are kept only so past orders still resolve what was sold.
+    const where: any = { status: { not: 'DELETED' } };
     if (merchantId) where.merchantId = merchantId;
     // If user is a merchant user, scope to their merchant
     if (user.merchantId) where.merchantId = user.merchantId;
@@ -150,7 +151,11 @@ export async function PUT(req: NextRequest) {
         },
       },
     });
-    if (!existing) return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    // A DELETED item is gone as far as the admin is concerned; it survives
+    // only to keep past orders readable.
+    if (!existing || existing.status === 'DELETED') {
+      return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    }
 
     // Merchant users can only update their own items
     if (user.merchantId && existing.merchantId !== user.merchantId) {
@@ -217,7 +222,11 @@ export async function DELETE(req: NextRequest) {
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
 
     const existing = await prisma.item.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    // A DELETED item is gone as far as the admin is concerned; it survives
+    // only to keep past orders readable.
+    if (!existing || existing.status === 'DELETED') {
+      return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    }
 
     // Merchant users can only delete their own items
     if (user.merchantId && existing.merchantId !== user.merchantId) {
