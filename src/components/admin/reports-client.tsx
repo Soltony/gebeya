@@ -92,7 +92,11 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
   
   const [repaymentsData, setRepaymentsData] = useState<any[]>([]);
   const [repaymentsPagination, setRepaymentsPagination] = useState({ total: 0, page: 1, pageSize: 50, totalPages: 0 });
-  
+
+  const [nationalBankData, setNationalBankData] = useState<any[]>([]);
+  const [nationalBankPagination, setNationalBankPagination] = useState({ total: 0, page: 1, pageSize: 50, totalPages: 0 });
+  const [isNationalBankLoading, setIsNationalBankLoading] = useState(false);
+
   const [providerSummaryData, setProviderSummaryData] = useState<
     Record<string, ProviderReportData>
   >({});
@@ -216,6 +220,12 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
     borrowerAging: {
       sortBy: "borrowerId",
       sortDir: "asc",
+      page: 1,
+      pageSize: DEFAULT_PAGE_SIZE,
+    },
+    nationalBankReport: {
+      sortBy: "disbursementDate",
+      sortDir: "desc",
       page: 1,
       pageSize: DEFAULT_PAGE_SIZE,
     },
@@ -353,6 +363,25 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
     }
   }, [providerId, timeframe, dateRange, debouncedSearch, buildPaginatedUrl, toast]);
 
+  // --- National Bank (NBE) regulatory report fetch ---
+  // Fetched only when its tab is active: the report joins provisioned data per
+  // customer and is far heavier than the other tabs.
+  const fetchNationalBankData = useCallback(async (page: number = 1, pageSize: number = DEFAULT_PAGE_SIZE) => {
+    if (!providerId || providerId === "none") return;
+    setIsNationalBankLoading(true);
+    try {
+      const response = await fetch(buildPaginatedUrl("/api/reports/national-bank", providerId, timeframe, dateRange, page, pageSize, debouncedSearch));
+      if (!response.ok) throw new Error("Failed to fetch national bank report data");
+      const result = await response.json();
+      setNationalBankData(result.data || []);
+      setNationalBankPagination({ total: result.total || 0, page: result.page || 1, pageSize: result.pageSize || pageSize, totalPages: result.totalPages || 0 });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setIsNationalBankLoading(false);
+    }
+  }, [providerId, timeframe, dateRange, debouncedSearch, buildPaginatedUrl, toast]);
+
   // --- Direct Payment fetch ---
   const fetchDirectPaymentData = useCallback(async (page: number = 1, pageSize: number = 50) => {
     setIsDirectPaymentLoading(true);
@@ -462,6 +491,14 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
       fetchDirectPaymentData(1, directPaymentPagination.pageSize);
     }
   }, [activeTab, timeframe, dateRange, debouncedSearch]);
+
+  // Fetch national bank data when its tab is active
+  useEffect(() => {
+    if (activeTab === "nationalBankReport") {
+      fetchNationalBankData(1, nationalBankPagination.pageSize);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, providerId, timeframe, dateRange, debouncedSearch]);
 
   // Fetch merchants when branch is selected
   useEffect(() => {
@@ -734,19 +771,25 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
           debouncedSearch
         );
 
-      const [allLoans, allCollections, allDisbursements, allRepayments] =
-        await Promise.all([
-          fetchAllPages(buildBaseUrl("/api/reports/loans")),
-          fetchAllPages(buildBaseUrl("/api/reports/collections")),
-          fetchAllPages((page, pageSize) =>
-            buildBaseUrl("/api/reports/transactions")(page, pageSize) +
-            "&type=disbursement"
-          ),
-          fetchAllPages((page, pageSize) =>
-            buildBaseUrl("/api/reports/transactions")(page, pageSize) +
-            "&type=repayment"
-          ),
-        ]);
+      const [
+        allLoans,
+        allCollections,
+        allDisbursements,
+        allRepayments,
+        allNationalBank,
+      ] = await Promise.all([
+        fetchAllPages(buildBaseUrl("/api/reports/loans")),
+        fetchAllPages(buildBaseUrl("/api/reports/collections")),
+        fetchAllPages((page, pageSize) =>
+          buildBaseUrl("/api/reports/transactions")(page, pageSize) +
+          "&type=disbursement"
+        ),
+        fetchAllPages((page, pageSize) =>
+          buildBaseUrl("/api/reports/transactions")(page, pageSize) +
+          "&type=repayment"
+        ),
+        fetchAllPages(buildBaseUrl("/api/reports/national-bank")),
+      ]);
 
       // 1. Provider Loans
       if (allLoans.length > 0) {
@@ -867,11 +910,11 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
           "Product Type": r.productType,
           Borrower: r.borrowerId,
           "Principal Disbursed": r.principalDisbursed,
-          "Principal Outstanding": r.principalOutstanding,
-          "Interest Outstanding": r.interestOutstanding,
-          "Service Fee Outstanding": r.serviceFeeOutstanding,
-          "Penalty Outstanding": r.penaltyOutstanding,
-          "Total Outstanding": r.totalOutstanding,
+          "Principal Paid": r.principalPaid,
+          "Interest Paid": r.interestPaid,
+          "Service Fee Paid": r.serviceFeePaid,
+          "Penalty Paid": r.penaltyPaid,
+          "Total Paid": r.totalPaid,
           Status: r.status,
         }));
         const ws = wb.addWorksheet("Repayments");
@@ -943,6 +986,50 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
         }));
         const wsBorrower = wb.addWorksheet("Borrower Performance");
         addSanitizedRows(wsBorrower, borrowerPerfData);
+      }
+
+      // 7. National Bank (NBE) reporting
+      // Column headers follow the regulator's submission template verbatim.
+      if (allNationalBank.length > 0) {
+        const nbData = allNationalBank.map((d: any) => ({
+          "First Name": d.firstName,
+          "Middle Name": d.middleName,
+          "Last Name": d.lastName,
+          Gender: d.gender,
+          "Personal Income Level": d.personalIncomeLevel,
+          "National ID/Fayda No": d.nationalId,
+          TIN: d.tin,
+          "Other ID No": d.otherIdNo,
+          Region: d.region,
+          Zone: d.zone,
+          "Sub-city": d.subCity,
+          Woreda: d.woreda,
+          Kebele: d.kebele,
+          "House No": d.houseNo,
+          "Tel. No": d.phoneNo,
+          "Personal Loan": d.personalLoan || "",
+          "Working Capital Loan": d.workingCapitalLoan || "",
+          "Buy Now Pay Later": d.buyNowPayLater || "",
+          "Revolving Credit": d.revolvingCredit || "",
+          "MSME Loans": d.msmeLoans || "",
+          Other: d.otherLoanType || "",
+          "Application Amount": d.applicationAmount,
+          "Purpose of Loan": d.purposeOfLoan,
+          "Loan Account Ref No": d.loanAccountRefNo,
+          "Approved/Disbursed Amount": d.approvedAmount,
+          "Disbursement Date": d.disbursementDate,
+          "Repayment Frequency": d.repaymentFrequency,
+          "Duration (Days)": d.durationDays,
+          "Outstanding Balance": d.outstandingBalance,
+          "Settlement Date": d.settlementDate,
+          "Loan Status/Classification": d.loanClassification,
+          "Loan Cycle": d.loanCycle,
+          "Interest Rate": d.interestRate,
+          "Service Charge": d.serviceCharge,
+          "Credit Score": d.creditScore,
+        }));
+        const wsNB = wb.addWorksheet("National Bank Report");
+        addSanitizedRows(wsNB, nbData);
       }
 
       // If workbook has no worksheets (no data), inform the user
@@ -1125,6 +1212,16 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
     }),
     [collectionsData, collectionsPagination]
   );
+  const nationalBankTable = useMemo(() => {
+    // Rows are paginated on the server; column sorting reorders the loaded page only.
+    const { sortBy, sortDir } = getTableState("nationalBankReport");
+    const items = sortBy
+      ? [...nationalBankData].sort((a, b) =>
+          compareValues(a?.[sortBy], b?.[sortBy], sortDir)
+        )
+      : nationalBankData;
+    return { items, ...nationalBankPagination };
+  }, [nationalBankData, nationalBankPagination, tableStates.nationalBankReport]);
 
   const utilizationTable = useMemo(() => {
     const rows = providers
@@ -1344,6 +1441,7 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
           <TabsTrigger value="utilizationReport">Fund Utilization</TabsTrigger>
           <TabsTrigger value="agingReport">Aging</TabsTrigger>
           <TabsTrigger value="borrowerReport">Borrower Performance</TabsTrigger>
+          <TabsTrigger value="nationalBankReport">National Bank Reporting</TabsTrigger>
         </TabsList>
               {/* Direct Payment Report Tab */}
               <TabsContent value="directPaymentReport">
@@ -1762,6 +1860,236 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
               }}
               onPageChange={(page) => fetchLoansData(page, providerTable.pageSize)}
               onPageSizeChange={(pageSize) => fetchLoansData(1, pageSize)}
+            />
+          </TabsContent>
+          {/*
+            National Bank of Ethiopia regulatory return. Column labels follow the
+            regulator's template verbatim since this output is submitted as-is.
+          */}
+          <TabsContent value="nationalBankReport">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader className="sticky top-0 bg-card z-10">
+                  <TableRow>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "firstName")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        First Name
+                        {renderSortIcon("nationalBankReport", "firstName")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "middleName")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Middle Name
+                        {renderSortIcon("nationalBankReport", "middleName")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "lastName")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Last Name
+                        {renderSortIcon("nationalBankReport", "lastName")}
+                      </button>
+                    </TableHead>
+                    <TableHead>Gender</TableHead>
+                    <TableHead>Income Level</TableHead>
+                    <TableHead>National ID/Fayda No</TableHead>
+                    <TableHead>TIN</TableHead>
+                    <TableHead>Other ID No</TableHead>
+                    <TableHead>Region</TableHead>
+                    <TableHead>Zone</TableHead>
+                    <TableHead>Sub-city</TableHead>
+                    <TableHead>Woreda</TableHead>
+                    <TableHead>Kebele</TableHead>
+                    <TableHead>House No</TableHead>
+                    <TableHead>Tel. No</TableHead>
+                    <TableHead className="text-right">Personal Loan</TableHead>
+                    <TableHead className="text-right">Working Capital</TableHead>
+                    <TableHead className="text-right">BNPL</TableHead>
+                    <TableHead className="text-right">Revolving Credit</TableHead>
+                    <TableHead className="text-right">MSME Loans</TableHead>
+                    <TableHead className="text-right">Other</TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "applicationAmount")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Application Amount
+                        {renderSortIcon("nationalBankReport", "applicationAmount")}
+                      </button>
+                    </TableHead>
+                    <TableHead>Purpose of Loan</TableHead>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "loanAccountRefNo")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Loan Account Ref No
+                        {renderSortIcon("nationalBankReport", "loanAccountRefNo")}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "approvedAmount")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Approved/Disbursed Amt
+                        {renderSortIcon("nationalBankReport", "approvedAmount")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "disbursementDate")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Disbursement Date
+                        {renderSortIcon("nationalBankReport", "disbursementDate")}
+                      </button>
+                    </TableHead>
+                    <TableHead>Repayment Frequency</TableHead>
+                    <TableHead className="text-right">Duration (Days)</TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "outstandingBalance")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Outstanding Balance
+                        {renderSortIcon("nationalBankReport", "outstandingBalance")}
+                      </button>
+                    </TableHead>
+                    <TableHead>Settlement Date</TableHead>
+                    <TableHead>
+                      <button
+                        onClick={() => toggleSort("nationalBankReport", "loanClassification")}
+                        className="flex items-center whitespace-nowrap"
+                      >
+                        Loan Status
+                        {renderSortIcon("nationalBankReport", "loanClassification")}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-right">Loan Cycle</TableHead>
+                    <TableHead>Interest Rate</TableHead>
+                    <TableHead>Service Charge</TableHead>
+                    <TableHead>Credit Score</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isNationalBankLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={35} className="h-24 text-center">
+                        <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+                      </TableCell>
+                    </TableRow>
+                  ) : nationalBankTable.items.length > 0 ? (
+                    nationalBankTable.items.map((row: any, idx: number) => (
+                      <TableRow key={row.loanAccountRefNo || idx}>
+                        <TableCell>{row.firstName}</TableCell>
+                        <TableCell>{row.middleName}</TableCell>
+                        <TableCell>{row.lastName}</TableCell>
+                        <TableCell>{row.gender}</TableCell>
+                        <TableCell>{row.personalIncomeLevel}</TableCell>
+                        <TableCell>{row.nationalId}</TableCell>
+                        <TableCell>{row.tin}</TableCell>
+                        <TableCell>{row.otherIdNo}</TableCell>
+                        <TableCell>{row.region}</TableCell>
+                        <TableCell>{row.zone}</TableCell>
+                        <TableCell>{row.subCity}</TableCell>
+                        <TableCell>{row.woreda}</TableCell>
+                        <TableCell>{row.kebele}</TableCell>
+                        <TableCell>{row.houseNo}</TableCell>
+                        <TableCell>{row.phoneNo}</TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.personalLoan ? formatCurrency(row.personalLoan) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.workingCapitalLoan ? formatCurrency(row.workingCapitalLoan) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.buyNowPayLater ? formatCurrency(row.buyNowPayLater) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.revolvingCredit ? formatCurrency(row.revolvingCredit) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.msmeLoans ? formatCurrency(row.msmeLoans) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.otherLoanType ? formatCurrency(row.otherLoanType) : ""}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {formatCurrency(row.applicationAmount)}
+                        </TableCell>
+                        <TableCell>{row.purposeOfLoan}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {row.loanAccountRefNo?.slice(-8)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {formatCurrency(row.approvedAmount)}
+                        </TableCell>
+                        <TableCell>{row.disbursementDate}</TableCell>
+                        <TableCell>{row.repaymentFrequency}</TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.durationDays}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {formatCurrency(row.outstandingBalance)}
+                        </TableCell>
+                        <TableCell>{row.settlementDate}</TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              row.loanClassification === "Loss" ||
+                              row.loanClassification === "Doubtful"
+                                ? "destructive"
+                                : row.loanClassification === "Closed"
+                                ? "default"
+                                : "secondary"
+                            }
+                            className={cn(
+                              row.loanClassification === "Closed" &&
+                                "bg-green-600 text-white"
+                            )}
+                          >
+                            {row.loanClassification}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.loanCycle}
+                        </TableCell>
+                        <TableCell>{row.interestRate}</TableCell>
+                        <TableCell>{row.serviceCharge}</TableCell>
+                        <TableCell>{row.creditScore}</TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={35} className="h-24 text-center">
+                        No results found for the selected filters.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <PaginationControls
+              tab="nationalBankReport"
+              meta={{
+                total: nationalBankTable.total,
+                totalPages: nationalBankTable.totalPages,
+                page: nationalBankTable.page,
+                pageSize: nationalBankTable.pageSize,
+              }}
+              onPageChange={(page) =>
+                fetchNationalBankData(page, nationalBankTable.pageSize)
+              }
+              onPageSizeChange={(pageSize) => fetchNationalBankData(1, pageSize)}
             />
           </TabsContent>
           <TabsContent value="disbursementsReport">
