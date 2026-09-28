@@ -206,7 +206,9 @@ export async function GET(req: NextRequest) {
             const interestPaid = Math.min(Math.max(0, totalRepaid - penalty - serviceFee), interest);
             const interestOutstanding = interest - interestPaid;
 
-            const principalPaid = Math.max(0, totalRepaid - penalty - serviceFee - interest);
+            // Capped like the other components: anything repaid beyond the total
+            // (refundable overpayment, legacy cent rounding) is not negative principal.
+            const principalPaid = Math.min(Math.max(0, totalRepaid - penalty - serviceFee - interest), principal);
             const principalOutstanding = principal - principalPaid;
 
             const totalOutstanding = Math.max(0, total - totalRepaid);
