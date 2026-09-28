@@ -7,6 +7,10 @@ import { getUserFromSession } from "@/lib/user";
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 
+// Description prefixes of the journal posted when a loan is disbursed
+// (api/loans, api/admin/applications, api/bnpl/orders).
+const DISBURSEMENT_JOURNAL_PREFIXES = ["Loan disbursement for", "BNPL disbursement for"];
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromSession();
@@ -69,6 +73,15 @@ export async function GET(request: NextRequest) {
       whereAny.payment = { isNot: null };
     } else if (type === "disbursement") {
       whereAny.payment = { is: null };
+      // Accrual, reversal and "Correction:" ledger journals also have no
+      // Payment; without this a loan shows up as disbursed once per journal.
+      whereAny.AND = [
+        {
+          OR: DISBURSEMENT_JOURNAL_PREFIXES.map((prefix) => ({
+            description: { startsWith: prefix },
+          })),
+        },
+      ];
     }
 
     // Server-side search (best-effort):
