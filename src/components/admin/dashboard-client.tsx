@@ -14,6 +14,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -101,6 +102,12 @@ const DashboardView = ({ data, color }: { data: DashboardData, color: string }) 
       { name: 'Active (Unpaid)', value: rawLoanStatusData.find(d => d.name === 'Active (Unpaid)')?.value || 0, color: `${color}B3` }, // 70% opacity
       { name: 'Overdue', value: rawLoanStatusData.find(d => d.name === 'Overdue')?.value || 0, color: `${color}66` }, // 40% opacity
     ], [rawLoanStatusData, color]);
+
+    const productTotals = useMemo(() => {
+        const active = productOverview.reduce((sum, p) => sum + p.active, 0);
+        const defaulted = productOverview.reduce((sum, p) => sum + p.defaulted, 0);
+        return { active, defaulted, defaultRate: active > 0 ? (defaulted / active) * 100 : 0 };
+    }, [productOverview]);
 
     const RADIAN = Math.PI / 180;
     const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, index, name, value }: any) => {
@@ -273,7 +280,8 @@ const DashboardView = ({ data, color }: { data: DashboardData, color: string }) 
               <CardHeader>
                 <CardTitle>Loan Products Overview</CardTitle>
                 <CardDescription>
-                  A summary of all available loan products.
+                  Active loans are unpaid loans. A loan is in default when it is unpaid past its due date.
+                  Default rate = loans in default ÷ active loans.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -282,7 +290,8 @@ const DashboardView = ({ data, color }: { data: DashboardData, color: string }) 
                     <TableRow>
                       <TableHead>Product</TableHead>
                       <TableHead>Provider</TableHead>
-                      <TableHead>Active Loans</TableHead>
+                      <TableHead className="text-right">Active Loans</TableHead>
+                      <TableHead className="text-right">Loans in Default</TableHead>
                       <TableHead className="text-right">Default Rate</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -291,11 +300,20 @@ const DashboardView = ({ data, color }: { data: DashboardData, color: string }) 
                         <TableRow key={`${product.provider}-${product.name}`}>
                             <TableCell>{product.name}</TableCell>
                             <TableCell>{product.provider}</TableCell>
-                            <TableCell>{product.active}</TableCell>
-                            <TableCell className="text-right">{product.defaultRate.toFixed(1)}%</TableCell>
+                            <TableCell className="text-right">{product.active}</TableCell>
+                            <TableCell className={`text-right ${product.defaulted > 0 ? 'text-destructive font-medium' : ''}`}>{product.defaulted}</TableCell>
+                            <TableCell className={`text-right ${product.defaulted > 0 ? 'text-destructive font-medium' : ''}`}>{product.defaultRate.toFixed(1)}%</TableCell>
                         </TableRow>
                     ))}
                   </TableBody>
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell colSpan={2} className="font-semibold">Total</TableCell>
+                      <TableCell className="text-right font-semibold">{productTotals.active}</TableCell>
+                      <TableCell className="text-right font-semibold">{productTotals.defaulted}</TableCell>
+                      <TableCell className="text-right font-semibold">{productTotals.defaultRate.toFixed(1)}%</TableCell>
+                    </TableRow>
+                  </TableFooter>
                 </Table>
               </CardContent>
             </Card>

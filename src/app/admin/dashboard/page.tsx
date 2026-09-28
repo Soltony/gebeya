@@ -190,19 +190,22 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
         }
     });
 
-    const productOverview = await Promise.all(allProducts.map(async p => {
-        const active = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: 'Unpaid' } });
-        const defaulted = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: 'Unpaid', dueDate: { lt: new Date() } } });
-        const total = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: { not: 'REVERSED' } } });
+    // Active = unpaid; in default = unpaid and past due date (same rule as Overdue/atRiskLoans).
+    // Default rate is the share of active loans that are in default.
+    const now = new Date();
+    const productOverview = allProducts.map(p => {
+        const productLoans = loans.filter(l => l.productId === p.id);
+        const active = productLoans.filter(l => l.repaymentStatus === 'Unpaid').length;
+        const defaulted = productLoans.filter(l => l.repaymentStatus === 'Unpaid' && new Date(l.dueDate) < now).length;
         return {
             name: p.name,
             provider: p.provider.name,
             active,
             defaulted,
-            total,
-            defaultRate: total > 0 ? (defaulted / total) * 100 : 0
+            total: productLoans.length,
+            defaultRate: active > 0 ? (defaulted / active) * 100 : 0
         };
-    }));
+    });
 
     return {
         totalLoans,
