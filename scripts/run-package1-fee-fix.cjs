@@ -43,6 +43,7 @@ if (!url) {
 }
 
 const commit = process.argv.includes('--commit');
+const includeFailed = process.argv.includes('--include-failed');
 const sqlPath = path.join(__dirname, 'fix-package1-service-fee.sql');
 if (!fs.existsSync(sqlPath)) {
   console.error(`SQL file not found: ${sqlPath} (keep both files in the same folder).`);
@@ -52,6 +53,7 @@ if (!fs.existsSync(sqlPath)) {
 let sql = fs.readFileSync(sqlPath, 'utf8');
 const commitFlag = /^DECLARE @Commit BIT = 0;/m;
 const showTablesFlag = /^DECLARE @ShowTables BIT = 1;/m;
+const includeFailedFlag = /^DECLARE @IncludeFailedDisbursements BIT = 0;/m;
 if (!commitFlag.test(sql)) {
   console.error('The SQL file must contain "DECLARE @Commit BIT = 0;". Leave it at 0 and use --commit instead.');
   process.exit(1);
@@ -64,6 +66,13 @@ if (!showTablesFlag.test(sql)) {
 // versions return the first result of a multi-result batch, others the last.
 sql = sql.replace(showTablesFlag, 'DECLARE @ShowTables BIT = 0;');
 if (commit) sql = sql.replace(commitFlag, 'DECLARE @Commit BIT = 1;');
+if (includeFailed) {
+  if (!includeFailedFlag.test(sql)) {
+    console.error('The SQL file is an older version (no @IncludeFailedDisbursements). Copy BOTH files again.');
+    process.exit(1);
+  }
+  sql = sql.replace(includeFailedFlag, 'DECLARE @IncludeFailedDisbursements BIT = 1;');
+}
 
 const target = url.match(/^sqlserver:\/\/([^;]+);.*?database=([^;]+)/i);
 const prisma = new PrismaClient();
@@ -80,6 +89,7 @@ async function main() {
   console.log(`Database: ${target ? `${target[1]} / ${target[2]}` : '(from DATABASE_URL)'}`);
   console.log(`Prisma client: ${prismaVersion}`);
   console.log(commit ? '*** APPLYING THE FIX ***' : '*** DRY RUN - nothing will be saved ***');
+  if (includeFailed) console.log('*** --include-failed: loans whose disbursement FAILED are charged too ***');
 
   const rows = await prisma.$queryRawUnsafe(sql);
   const first = Array.isArray(rows) ? rows[0] : undefined;

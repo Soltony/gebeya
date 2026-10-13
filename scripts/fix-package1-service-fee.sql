@@ -25,6 +25,10 @@
           to Package 3, so they get the fee when the loan is created.
        6. Disables Package 1 so no new no-fee loans are created.
 
+     OPTION: set @IncludeFailedDisbursements = 1 (runner: --include-failed) to
+     ALSO charge loans whose disbursement FAILED. No money reached the merchant
+     for those; reversing such a loan later also reverses its fee.
+
      SKIPPED (listed in the results with the reason):
        - loans whose disbursement FAILED   -> handle on the Reversals page
        - loans already reversed or with a reversal waiting for approval
@@ -51,6 +55,7 @@ SET QUOTED_IDENTIFIER ON;
 DECLARE @Commit BIT = 0;           -- 0 = dry run (nothing saved), 1 = apply the fix
 DECLARE @DisablePackage1 BIT = 1;  -- 1 = also switch Package 1 off
 DECLARE @ShowTables BIT = 1;       -- 1 = show step-by-step result tables (SSMS/sqlcmd); the Node runner sets 0
+DECLARE @IncludeFailedDisbursements BIT = 0;  -- 1 = ALSO charge loans whose disbursement FAILED (merchant was never paid)
 
 DECLARE @now DATETIME2 = SYSUTCDATETIME();
 DECLARE @fixTag VARCHAR(100) = 'package1-service-fee-2026-09';
@@ -119,6 +124,7 @@ BEGIN
            @feeType           AS package3FeeType,
            @feeValue          AS package3FeeValue,
            @taxRateOnFee      AS taxRateOnServiceFee,
+           @IncludeFailedDisbursements AS includeFailedDisbursements,
            @sfReceivableId    AS serviceFeeReceivableAccountId,
            @sfBalanceBefore   AS serviceFeeReceivableBalanceBefore;
 END
@@ -180,7 +186,7 @@ SET taxOnFee = CAST(ROUND(CAST(newServiceFee * @taxRateOnFee / 100.0 AS DECIMAL(
 
 UPDATE #loans
 SET skipReason = 'SKIP: disbursement did not succeed (use the Reversals page)'
-WHERE skipReason IS NULL AND successfulDisbursements = 0;
+WHERE skipReason IS NULL AND successfulDisbursements = 0 AND @IncludeFailedDisbursements = 0;
 
 UPDATE c
 SET skipReason = 'SKIP: loan reversed or reversal waiting for approval'
@@ -355,6 +361,7 @@ DECLARE @report NVARCHAR(MAX) = (
             SELECT @pkg1Id AS package1Id, @pkg1StatusBefore AS package1StatusBefore,
                    @pkg3Id AS package3Id, @feeType AS package3FeeType, @feeValue AS package3FeeValue,
                    @taxRateOnFee AS taxRateOnServiceFee,
+                   @IncludeFailedDisbursements AS includeFailedDisbursements,
                    @sfReceivableId AS serviceFeeReceivableAccountId,
                    @sfBalanceBefore AS serviceFeeReceivableBalanceBefore
             FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)) AS settings,

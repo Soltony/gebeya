@@ -1,0 +1,143 @@
+{
+  "mode": "APPLIED",
+  "settings": {
+    "package1Id": "cmnrnrde00097nww41r4tql8s",
+    "package1StatusBefore": "Disabled",
+    "package3Id": "cmnsgyyo200aajg63k482gcgl",
+    "package3FeeType": "percentage",
+    "package3FeeValue": 10,
+    "taxRateOnServiceFee": 0,
+    "includeFailedDisbursements": true,
+    "serviceFeeReceivableAccountId": "cmnrnqhl7008fnww4jp0i1ctp",
+    "serviceFeeReceivableBalanceBefore": 86870.73250000003
+  },
+  "loans": [
+    {
+      "loanId": "cmtvcuyxl00dwms5oerhqtjq2",
+      "borrowerId": "251925366271",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvdhn5400f3ms5oli8ywaf0",
+      "borrowerId": "251913720690",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvdqnjm00gkms5oamfm6e59",
+      "borrowerId": "251980262930",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvdxui300hbms5oga750clq",
+      "borrowerId": "251913107968",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtveb5od00j3ms5odbg3gxeq",
+      "borrowerId": "251911027151",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvey48y00ocms5oxuohn0lx",
+      "borrowerId": "251913570535",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvezalq00pbms5ocwbp7kt8",
+      "borrowerId": "251911620428",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvezihf00prms5obh9n73j2",
+      "borrowerId": "251913762429",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    },
+    {
+      "loanId": "cmtvf5gem00qmms5op7nau689",
+      "borrowerId": "251940246306",
+      "loanAmount": 19492.5,
+      "repaidAmount": 0,
+      "repaymentStatus": "Unpaid",
+      "disbursedOn": "2026-09-10",
+      "successfulDisbursements": 0,
+      "failedOrPendingDisbursements": 1,
+      "action": "FIX",
+      "serviceFeeToAdd": 1949.25,
+      "taxOnFeeToAdd": 0
+    }
+  ],
+  "undeliveredOrders": [],
+  "summary": {
+    "loansFixed": 9,
+    "totalServiceFeeAdded": 17543.25,
+    "totalTaxOnFeeAdded": 0,
+    "loansSkipped": 0,
+    "undeliveredOrdersMoved": 0,
+    "serviceFeeReceivableBalanceAfter": 104413.9825,
+    "package1StatusAfter": "Disabled"
+  }
+}
