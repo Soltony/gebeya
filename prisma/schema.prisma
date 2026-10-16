@@ -34,6 +34,8 @@ model User {
   createdChanges              PendingChange[]       @relation("CreatedBy")
   approvedChanges             PendingChange[]       @relation("ApprovedBy")
   updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")
+  manualRepaymentsEntered     ManualRepayment[]     @relation("ManualRepaymentMaker")
+  manualRepaymentsChecked     ManualRepayment[]     @relation("ManualRepaymentChecker")
   createdAt                   DateTime              @default(now())
   updatedAt                   DateTime              @updatedAt
 }
@@ -220,6 +222,7 @@ model Loan {
   installments               LoanInstallment[]
   journalEntries             JournalEntry[]
   pendingPayments            PendingPayment[]
+  manualRepayments           ManualRepayment[]
   disbursementTransactions   DisbursementTransaction[]
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
@@ -1158,4 +1161,98 @@ model NplCbsDeletion {
   @@index([accountNumber])
   @@index([status])
   @@index([createdAt])
+}
+
+// --------------------------------------
+// MANUAL REPAYMENT RECORDING
+// --------------------------------------
+
+/// A repayment collected off-channel (branch cash, transfer, cheque) and keyed in
+/// by a Maker. Nothing moves on the loan until a Checker approves it: posting runs
+/// through applyBnplRepayment inside the approval transaction, never at entry.
+///
+/// Statuses: PENDING_APPROVAL -> APPROVED | REJECTED; an APPROVED row may go
+/// PENDING_REVERSAL -> REVERSED. A posted row is never edited, only reversed.
+model ManualRepayment {
+  id         String @id @default(cuid())
+  loanId     String
+  loan       Loan   @relation(fields: [loanId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  borrowerId String
+
+  amount          Float
+  paymentSource   String // CASH, BANK_TRANSFER, CHEQUE, OTHER_CHANNEL
+  referenceNumber String
+  /// DB-enforced "one reference per payment source". Live rows are keyed
+  /// "<source>|<reference>"; a rejected or reversed row is re-keyed with its own id
+  /// appended so the branch can re-submit the same genuine bank reference.
+  referenceKey    String   @unique
+  paymentDate     DateTime
+  remarks         String?  @db.NVarChar(Max)
+
+  attachmentName String?
+  attachmentType String?
+  attachmentSize Int?
+  attachmentData String? @db.NVarChar(Max) // base64 receipt / bank slip
+
+  status String @default("PENDING_APPROVAL")
+
+  // Balance the Maker saw at entry; re-read and re-checked at approval time.
+  balanceBefore    Float
+  principalBefore  Float
+  interestBefore   Float
+  serviceFeeBefore Float
+  penaltyBefore    Float
+  taxBefore        Float
+  loanStatusBefore String
+  /// Installment the quote belonged to, or null for a loan with no schedule.
+  installmentNumber Int?
+
+  // Filled in by the posting step: balance before and after, for the audit trail.
+  balanceAfter    Float?
+  loanStatusAfter String?
+  allocation      String?   @db.NVarChar(Max) // JSON: how the amount settled each bucket
+  paymentId       String?
+  journalEntryId  String?
+  postedAt        DateTime?
+
+  makerId        String
+  maker          User    @relation("ManualRepaymentMaker", fields: [makerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  makerIp        String?
+  makerUserAgent String? @db.Text
+
+  checkerId       String?
+  checker         User?     @relation("ManualRepaymentChecker", fields: [checkerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  checkerIp       String?
+  decidedAt       DateTime?
+  rejectionReason String?   @db.Text
+
+  reversalReason         String?   @db.Text
+  reversalRequestedById  String?
+  reversalRequestedAt    DateTime?
+  reversedById           String?
+  reversedAt             DateTime?
+  reversalJournalEntryId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([loanId])
+  @@index([borrowerId])
+  @@index([paymentDate])
+  @@index([makerId])
+  @@index([checkerId])
+  @@index([referenceNumber])
+}
+
+/// Bank-policy knobs for the manual repayment module. Single row, id = 'global'.
+model ManualRepaymentConfig {
+  id                 String   @id @default("global")
+  /// Repayments above this amount are blocked at entry (null = no limit).
+  makerApprovalLimit Float?
+  requireAttachment  Boolean  @default(false)
+  notifyCustomer     Boolean  @default(true)
+  updatedById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }

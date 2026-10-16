@@ -21,6 +21,8 @@ import {
   ReceiptText,
   MapPin,
   ChevronRight,
+  HandCoins,
+  ClipboardCheck,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -82,6 +84,20 @@ export const allMenuItems: MenuItem[] = [
     label: 'Payment Approvals',
     icon: CheckSquare,
     roles: ['Super Admin', 'Loan Manager'],
+  },
+  {
+    path: '/admin/manual-repayment',
+    label: 'Manual Repayment',
+    icon: HandCoins,
+    roles: ['Super Admin', 'Loan Manager', 'Auditor'],
+    permissionKey: 'manual-repayment',
+  },
+  {
+    path: '/admin/manual-repayment-approvals',
+    label: 'Repayment Approvals',
+    icon: ClipboardCheck,
+    roles: ['Super Admin', 'Loan Manager'],
+    permissionKey: 'repayment-approvals',
   },
   {
     path: '/admin/npl',
