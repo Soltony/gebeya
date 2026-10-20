@@ -178,7 +178,8 @@ const customerOrderSelect = {
       quantity: true,
       unitPrice: true,
       lineTotal: true,
-      item: { select: { id: true, name: true, imageUrl: true } },
+      // No imageUrl: it holds base64 photos, and order screens and bot replies show none.
+      item: { select: { id: true, name: true } },
       variant: { select: { name: true } },
       optionSelections: { select: { optionValue: { select: { label: true, group: { select: { name: true } } } } } },
     },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireTelegramUser, telegramErrorResponse } from '@/lib/telegram/auth';
 import { getCatalogItem, parseItemImages } from '@/lib/marketplace/catalog';
+import { itemImageUrl } from '@/lib/marketplace/item-images';
 import { isTelegramOrderable } from '@/lib/telegram/orders';
 import { buildMiniAppDeepLink } from '@/lib/telegram/config';
 
@@ -21,8 +22,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       description: item.description,
       price: item.price,
       currency: item.currency,
-      images: parseItemImages(item.imageUrl),
-      videoUrl: item.videoUrl,
+      // URLs, not the stored base64 data, so photos are resized and cached.
+      images: parseItemImages(item.imageUrl).map((_, index) => ({
+        large: itemImageUrl(item.id, index, item.updatedAt, 960),
+        thumb: itemImageUrl(item.id, index, item.updatedAt, 200),
+      })),
       merchant: { id: item.merchant.id, name: item.merchant.name },
       category: item.category,
       bestDiscount: item.bestDiscount,

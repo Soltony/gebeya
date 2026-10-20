@@ -167,7 +167,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
         <div className="relative aspect-square bg-black/5">
           {item.images.length > 0 ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={item.images[imageIndex]} alt={item.name} className="h-full w-full object-cover" />
+            <img src={item.images[imageIndex].large} alt={item.name} className="h-full w-full object-cover" />
           ) : (
             <div className="flex h-full items-center justify-center">
               <Package className="h-12 w-12 tg-hint" />
@@ -176,15 +176,15 @@ export function ItemScreen({ itemId }: { itemId: string }) {
         </div>
         {item.images.length > 1 && (
           <div className="flex gap-2 overflow-x-auto p-2">
-            {item.images.map((src, i) => (
+            {item.images.map((image, i) => (
               <button
-                key={src + i}
+                key={image.thumb}
                 type="button"
                 onClick={() => setImageIndex(i)}
                 className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 ${i === imageIndex ? 'border-[#fdb913]' : 'border-transparent'}`}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={src} alt="" className="h-full w-full object-cover" />
+                <img src={image.thumb} alt="" className="h-full w-full object-cover" loading="lazy" />
               </button>
             ))}
           </div>

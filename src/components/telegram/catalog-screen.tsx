@@ -101,12 +101,21 @@ export function CatalogScreen() {
 
 function ItemCard({ item }: { item: CatalogItem }) {
   const hasDiscount = item.discountedPrice != null && item.discountedPrice < item.price;
+  // The catalog does not know whether an item has a photo; the image URL 404s when it has none.
+  const [imageFailed, setImageFailed] = useState(false);
   return (
     <Link href={`/tg/items/${item.id}`} className="tg-section block overflow-hidden">
       <div className="relative aspect-square bg-black/5">
-        {item.image ? (
+        {item.image && !imageFailed ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={item.image} alt={item.name} className="h-full w-full object-cover" loading="lazy" />
+          <img
+            src={item.image}
+            alt={item.name}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            onError={() => setImageFailed(true)}
+          />
         ) : (
           <div className="flex h-full items-center justify-center">
             <Package className="h-8 w-8 tg-hint" />

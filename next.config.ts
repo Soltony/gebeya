@@ -36,6 +36,11 @@ const nextConfig: NextConfig = {
         headers: [{ key: 'X-Frame-Options', value: 'DENY' }],
       },
       {
+        // Self-hosted Telegram Mini App SDK; it changes rarely.
+        source: '/telegram-web-app.js',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=86400' }],
+      },
+      {
         source: '/api/:path*',
         headers: [
           { key: 'X-Content-Type-Options', value: 'nosniff' },

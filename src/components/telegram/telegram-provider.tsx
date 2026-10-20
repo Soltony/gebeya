@@ -82,7 +82,7 @@ const launchInitData = captureLaunchInitData();
 type Status = 'loading' | 'ready' | 'outside-telegram' | 'error';
 
 type Diagnostics = {
-  sdk: 'loaded' | 'failed' | 'timeout';
+  sdk: 'pending' | 'loaded' | 'failed' | 'timeout';
   initDataSource: 'sdk' | 'url' | 'none';
   platform: string;
   rejection?: { code?: string; message: string };
@@ -99,7 +99,8 @@ export function TelegramProvider({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [sdkLoaded, setSdkLoaded] = useState(false);
+  // True once we know which initData to send (from the launch URL, or from the SDK).
+  const [credentialsReady, setCredentialsReady] = useState(false);
   const [webApp, setWebApp] = useState<TelegramWebApp | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +127,19 @@ export function TelegramProvider({
     return latest;
   }, [api]);
 
+  // The launch URL already carries the signed initData, so sign in straight
+  // away instead of waiting for the SDK script; it only adds native buttons.
+  useEffect(() => {
+    if (!launchInitData) return;
+    initDataRef.current = launchInitData;
+    setDiagnostics({
+      sdk: 'pending',
+      initDataSource: 'url',
+      platform: new URLSearchParams(window.location.hash.slice(1)).get('tgWebAppPlatform') || 'unknown',
+    });
+    setCredentialsReady(true);
+  }, []);
+
   const settleSdk = useCallback((sdk: Diagnostics['sdk']) => {
     const wa = getWebApp();
     if (wa) {
@@ -133,17 +147,20 @@ export function TelegramProvider({
       wa.expand();
       setWebApp(wa);
     }
-    // A script that loads after the timeout only adds the native buttons.
     if (settledRef.current) return;
     settledRef.current = true;
 
-    initDataRef.current = wa?.initData || launchInitData;
-    setDiagnostics({
+    setDiagnostics(d => ({
       sdk,
-      initDataSource: wa?.initData ? 'sdk' : launchInitData ? 'url' : 'none',
-      platform: wa?.platform || new URLSearchParams(window.location.hash.slice(1)).get('tgWebAppPlatform') || 'unknown',
-    });
-    setSdkLoaded(true);
+      initDataSource: d?.initDataSource === 'url' ? 'url' : wa?.initData ? 'sdk' : 'none',
+      platform: wa?.platform || d?.platform || 'unknown',
+      rejection: d?.rejection,
+    }));
+    // Only matters when the launch URL had no initData (e.g. local dev bypass).
+    if (!initDataRef.current) {
+      initDataRef.current = wa?.initData || '';
+      setCredentialsReady(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -169,8 +186,8 @@ export function TelegramProvider({
   // Without initData the server only accepts the request under the local dev
   // bypass, so this also runs when the SDK fails to load.
   useEffect(() => {
-    if (sdkLoaded) load();
-  }, [sdkLoaded, load]);
+    if (credentialsReady) load();
+  }, [credentialsReady, load]);
 
   // A start_param deep link (t.me/<bot>/<app>?startapp=item_<id>) opens at /tg; send it on once
   // per launch. Each launch has its own initData hash, so the next deep link is not skipped.

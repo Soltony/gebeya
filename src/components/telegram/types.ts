@@ -25,7 +25,7 @@ export type ItemDetail = {
   description: string | null;
   price: number;
   currency: string;
-  images: string[];
+  images: Array<{ large: string; thumb: string }>;
   merchant: { id: string; name: string };
   category: { id: string; name: string } | null;
   bestDiscount: { type: string; value: number; name: string } | null;
@@ -59,7 +59,7 @@ export type CustomerOrder = {
     quantity: number;
     unitPrice: number;
     lineTotal: number;
-    item: { id: string; name: string; imageUrl: string | null };
+    item: { id: string; name: string };
     variant: { name: string } | null;
     optionSelections: Array<{ optionValue: { label: string; group: { name: string } } }>;
   }>;

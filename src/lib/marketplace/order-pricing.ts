@@ -17,9 +17,19 @@ export type OrderLineInput = {
 export class OrderPricingError extends Error {}
 
 async function loadItem(itemId: string) {
+  // Explicit select: imageUrl/videoUrl hold base64 media and pricing needs neither.
   return prisma.item.findUnique({
     where: { id: itemId },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      price: true,
+      currency: true,
+      status: true,
+      sellingOption: true,
+      merchantId: true,
+      categoryId: true,
+      requiresMerchantAvailabilityConfirmation: true,
       merchant: { select: { id: true, name: true, status: true } },
       variants: true,
       optionGroups: { include: { values: true } },

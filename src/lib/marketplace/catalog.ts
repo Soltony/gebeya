@@ -11,7 +11,7 @@ export type CatalogFilters = {
   merchantId?: string;
 };
 
-export async function listCatalogItems({ search = '', categoryId = '', merchantId = '' }: CatalogFilters) {
+function buildCatalogWhere({ search = '', categoryId = '', merchantId = '' }: CatalogFilters) {
   const where: any = { status: 'ACTIVE', merchant: { status: 'ACTIVE' } };
 
   if (search) {
@@ -23,9 +23,13 @@ export async function listCatalogItems({ search = '', categoryId = '', merchantI
   }
   if (categoryId) where.categoryId = categoryId;
   if (merchantId) where.merchantId = merchantId;
+  return where;
+}
 
+/** Catalog items with full columns (photos and video as stored). Used by the super-app shop. */
+export async function listCatalogItems(filters: CatalogFilters) {
   const items = await prisma.item.findMany({
-    where,
+    where: buildCatalogWhere(filters),
     include: {
       merchant: { select: { id: true, name: true } },
       category: { select: { id: true, name: true } },
@@ -34,7 +38,42 @@ export async function listCatalogItems({ search = '', categoryId = '', merchantI
     },
     orderBy: { createdAt: 'desc' },
   });
+  return withBestDiscounts(items);
+}
 
+/**
+ * Catalog items without the large columns (imageUrl, videoUrl, description),
+ * which hold base64 media. Photos are served separately; see item-images.ts.
+ */
+export async function listCatalogItemsLean(filters: CatalogFilters) {
+  const items = await prisma.item.findMany({
+    where: buildCatalogWhere(filters),
+    select: {
+      id: true,
+      name: true,
+      price: true,
+      currency: true,
+      sellingOption: true,
+      merchantId: true,
+      categoryId: true,
+      updatedAt: true,
+      merchant: { select: { id: true, name: true } },
+      category: { select: { id: true, name: true } },
+      discountRules: { where: { status: 'ACTIVE' } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return withBestDiscounts(items);
+}
+
+type DiscountableItem = {
+  price: number;
+  merchantId: string;
+  categoryId: string | null;
+  discountRules: Awaited<ReturnType<typeof prisma.discountRule.findMany>>;
+};
+
+async function withBestDiscounts<T extends DiscountableItem>(items: T[]) {
   // Also fetch category-level discounts
   const now = new Date();
   const categoryDiscounts = await prisma.discountRule.findMany({
