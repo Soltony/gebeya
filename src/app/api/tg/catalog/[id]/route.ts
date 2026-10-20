@@ -5,15 +5,20 @@ import { itemImageUrl } from '@/lib/marketplace/item-images';
 import { isTelegramOrderable } from '@/lib/telegram/orders';
 import { buildMiniAppDeepLink } from '@/lib/telegram/config';
 
-/** GET /api/tg/catalog/:id */
+/**
+ * GET /api/tg/catalog/:id
+ *
+ * BNPL_ONLY items are not sold in Telegram, so they 404 here as well (e.g. an
+ * old share link), matching their absence from the catalog.
+ */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     await requireTelegramUser(req);
 
     const { id } = await params;
     const item = await getCatalogItem(id);
-    if (!item || item.merchant.status !== 'ACTIVE') {
-      return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    if (!item || item.merchant.status !== 'ACTIVE' || !isTelegramOrderable(item)) {
+      return NextResponse.json({ error: 'This item is not available in Telegram.' }, { status: 404 });
     }
 
     return NextResponse.json({
@@ -37,7 +42,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           name: g.name,
           values: g.values.map(v => ({ id: v.id, label: v.label, priceDelta: v.priceDelta })),
         })),
-      orderable: isTelegramOrderable(item),
       requiresMerchantConfirmation: item.requiresMerchantAvailabilityConfirmation,
       shareLink: buildMiniAppDeepLink(`item_${item.id}`),
     });

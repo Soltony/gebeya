@@ -9,9 +9,11 @@ export type CatalogFilters = {
   search?: string;
   categoryId?: string;
   merchantId?: string;
+  /** Restrict to these Item.sellingOption values (e.g. the Telegram shop hides BNPL_ONLY). */
+  sellingOptions?: string[];
 };
 
-function buildCatalogWhere({ search = '', categoryId = '', merchantId = '' }: CatalogFilters) {
+export function buildCatalogWhere({ search = '', categoryId = '', merchantId = '', sellingOptions }: CatalogFilters) {
   const where: any = { status: 'ACTIVE', merchant: { status: 'ACTIVE' } };
 
   if (search) {
@@ -23,6 +25,7 @@ function buildCatalogWhere({ search = '', categoryId = '', merchantId = '' }: Ca
   }
   if (categoryId) where.categoryId = categoryId;
   if (merchantId) where.merchantId = merchantId;
+  if (sellingOptions?.length) where.sellingOption = { in: sellingOptions };
   return where;
 }
 
@@ -119,9 +122,18 @@ async function withBestDiscounts<T extends DiscountableItem>(items: T[]) {
   });
 }
 
-export function listActiveCategories() {
+/**
+ * Active categories. With `sellingOptions`, only categories that contain at
+ * least one listable item sold that way, so a shop never offers an empty category.
+ */
+export function listActiveCategories(options: { sellingOptions?: string[] } = {}) {
   return prisma.productCategory.findMany({
-    where: { status: 'ACTIVE' },
+    where: {
+      status: 'ACTIVE',
+      ...(options.sellingOptions?.length
+        ? { items: { some: buildCatalogWhere({ sellingOptions: options.sellingOptions }) } }
+        : {}),
+    },
     orderBy: { name: 'asc' },
   });
 }

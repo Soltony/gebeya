@@ -10,13 +10,13 @@ export type CatalogItem = {
   image: string | null;
   merchant: { id: string; name: string };
   category: { id: string; name: string } | null;
-  orderable: boolean;
 };
 
+/** The Telegram catalog only lists items that can be paid for directly (DIRECT_ONLY, BOTH). */
 export type CatalogResponse = {
   items: CatalogItem[];
   categories: Array<{ id: string; name: string }>;
-  merchants: Array<{ id: string; name: string; iconUrl: string | null }>;
+  merchants: Array<{ id: string; name: string }>;
 };
 
 export type ItemDetail = {
@@ -30,7 +30,6 @@ export type ItemDetail = {
   category: { id: string; name: string } | null;
   bestDiscount: { type: string; value: number; name: string } | null;
   optionGroups: Array<{ id: string; name: string; values: Array<{ id: string; label: string; priceDelta: number }> }>;
-  orderable: boolean;
   requiresMerchantConfirmation: boolean;
   shareLink: string | null;
 };

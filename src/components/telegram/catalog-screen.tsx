@@ -88,7 +88,9 @@ export function CatalogScreen() {
             ))}
           </div>
         ) : data && data.items.length === 0 ? (
-          <p className="py-10 text-center text-sm tg-hint">No products match your search.</p>
+          <p className="py-10 text-center text-sm tg-hint">
+            {debouncedSearch || categoryId ? 'No products match your search.' : 'No products are available here yet. Please check back soon.'}
+          </p>
         ) : (
           <div className={`grid grid-cols-2 gap-3 ${loading ? 'opacity-60' : ''}`}>
             {data?.items.map(item => <ItemCard key={item.id} item={item} />)}
@@ -134,7 +136,6 @@ function ItemCard({ item }: { item: CatalogItem }) {
           <span className="text-sm font-semibold">{formatEtb(hasDiscount ? item.discountedPrice! : item.price)}</span>
           {hasDiscount && <span className="text-[11px] line-through tg-hint">{formatEtb(item.price)}</span>}
         </div>
-        {!item.orderable && <p className="text-[11px] font-medium text-amber-600">Pay later · Nib app only</p>}
       </div>
     </Link>
   );

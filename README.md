@@ -133,7 +133,7 @@ EXTERNAL_API_PASSWORD="123456"
 
 ## 🤖 Telegram Bot & Mini App
 
-The marketplace is also available as a Telegram Mini App at `/tg`, with a bot that links the customer's phone number and sends order updates. Customers can browse, place **direct** (non-credit) orders for items whose selling option is `DIRECT_ONLY` or `BOTH`, track them and cancel them. BNPL-only items are shown but can only be bought in the Nib app. Payment is not collected in Telegram yet; Telegram orders are tagged with a **Telegram** badge on the admin Orders page.
+The marketplace is also available as a Telegram Mini App at `/tg`, with a bot that links the customer's phone number and sends order updates. The Telegram shop lists only items whose selling option is **Direct Payment Only** (`DIRECT_ONLY`) or **Both (BNPL + Direct)** (`BOTH`); customers place **direct** (non-credit) orders for them, track them and cancel them. **BNPL Only** items are not shown in Telegram at all — they stay in the Nib app — and `BOTH` items can only be paid directly in Telegram. Payment is not collected in Telegram yet; Telegram orders are tagged with a **Telegram** badge on the admin Orders page.
 
 ### 1. Create the bot (BotFather)
 

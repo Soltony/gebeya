@@ -55,7 +55,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
 
   // The server quote is the amount the order will be placed for (quantity discounts included).
   useEffect(() => {
-    if (!item?.orderable || !optionsComplete) {
+    if (!item || !optionsComplete) {
       setQuote(null);
       return;
     }
@@ -77,7 +77,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [api, cart, item?.orderable, optionsComplete]);
+  }, [api, cart, item, optionsComplete]);
 
   const estimatedTotal = useMemo(() => {
     if (!item) return 0;
@@ -123,7 +123,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
   const mainButtonText = !optionsComplete ? 'Choose options' : `Order · ${formatEtb(total)}`;
   const nativeButton = useMainButton({
     text: mainButtonText,
-    visible: Boolean(item?.orderable),
+    visible: Boolean(item),
     enabled: optionsComplete && Boolean(quote),
     progress: placing,
     onClick: placeOrder,
@@ -215,86 +215,77 @@ export function ItemScreen({ itemId }: { itemId: string }) {
         {item.description && <p className="whitespace-pre-line pt-2 text-sm leading-relaxed">{item.description}</p>}
       </div>
 
-      {!item.orderable ? (
-        <div className="tg-section p-4 text-sm">
-          <p className="font-medium">Available with pay-later only</p>
-          <p className="mt-1 tg-hint">This item can be bought with BNPL in the Nib mobile app. Ordering it in Telegram is not available yet.</p>
+      {item.optionGroups.map(group => (
+        <div key={group.id} className="tg-section space-y-2 p-4">
+          <p className="text-sm font-medium">{group.name}</p>
+          <div className="flex flex-wrap gap-2">
+            {group.values.map(value => (
+              <button
+                key={value.id}
+                type="button"
+                data-active={selected[group.id] === value.id}
+                onClick={() => setSelected(prev => ({ ...prev, [group.id]: value.id }))}
+                className="tg-chip rounded-full px-3 py-1.5 text-sm"
+              >
+                {value.label}
+                {value.priceDelta ? ` (${value.priceDelta > 0 ? '+' : ''}${formatEtb(value.priceDelta)})` : ''}
+              </button>
+            ))}
+          </div>
         </div>
-      ) : (
-        <>
-          {item.optionGroups.map(group => (
-            <div key={group.id} className="tg-section space-y-2 p-4">
-              <p className="text-sm font-medium">{group.name}</p>
-              <div className="flex flex-wrap gap-2">
-                {group.values.map(value => (
-                  <button
-                    key={value.id}
-                    type="button"
-                    data-active={selected[group.id] === value.id}
-                    onClick={() => setSelected(prev => ({ ...prev, [group.id]: value.id }))}
-                    className="tg-chip rounded-full px-3 py-1.5 text-sm"
-                  >
-                    {value.label}
-                    {value.priceDelta ? ` (${value.priceDelta > 0 ? '+' : ''}${formatEtb(value.priceDelta)})` : ''}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
+      ))}
 
-          <div className="tg-section flex items-center justify-between p-4">
-            <span className="text-sm font-medium">Quantity</span>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                className="tg-chip flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-40"
-                onClick={() => setQuantity(q => Math.max(1, q - 1))}
-                disabled={quantity <= 1}
-                aria-label="Decrease quantity"
-              >
-                <Minus className="h-4 w-4" />
-              </button>
-              <span className="w-6 text-center font-semibold">{quantity}</span>
-              <button
-                type="button"
-                className="tg-chip flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-40"
-                onClick={() => setQuantity(q => Math.min(MAX_QUANTITY, q + 1))}
-                disabled={quantity >= MAX_QUANTITY}
-                aria-label="Increase quantity"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
+      <div className="tg-section flex items-center justify-between p-4">
+        <span className="text-sm font-medium">Quantity</span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="tg-chip flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-40"
+            onClick={() => setQuantity(q => Math.max(1, q - 1))}
+            disabled={quantity <= 1}
+            aria-label="Decrease quantity"
+          >
+            <Minus className="h-4 w-4" />
+          </button>
+          <span className="w-6 text-center font-semibold">{quantity}</span>
+          <button
+            type="button"
+            className="tg-chip flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-40"
+            onClick={() => setQuantity(q => Math.min(MAX_QUANTITY, q + 1))}
+            disabled={quantity >= MAX_QUANTITY}
+            aria-label="Increase quantity"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="tg-section space-y-1 p-4 text-sm">
+        {discount > 0 && (
+          <div className="flex justify-between text-red-500">
+            <span>Discount</span>
+            <span>−{formatEtb(discount)}</span>
           </div>
+        )}
+        <div className="flex justify-between text-base font-semibold">
+          <span>Total</span>
+          <span>{formatEtb(total)}</span>
+        </div>
+        {quoteError && <p className="pt-1 text-xs tg-destructive">{quoteError}</p>}
+        <p className="pt-1 text-xs tg-hint">
+          {item.requiresMerchantConfirmation ? 'The merchant confirms availability before delivery. ' : ''}
+          No payment is taken when you order.
+        </p>
+      </div>
 
-          <div className="tg-section space-y-1 p-4 text-sm">
-            {discount > 0 && (
-              <div className="flex justify-between text-red-500">
-                <span>Discount</span>
-                <span>−{formatEtb(discount)}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-base font-semibold">
-              <span>Total</span>
-              <span>{formatEtb(total)}</span>
-            </div>
-            {quoteError && <p className="pt-1 text-xs tg-destructive">{quoteError}</p>}
-            <p className="pt-1 text-xs tg-hint">
-              {item.requiresMerchantConfirmation ? 'The merchant confirms availability before delivery. ' : ''}
-              No payment is taken when you order.
-            </p>
-          </div>
-
-          {!nativeButton && (
-            <Button
-              className="tg-primary-button h-11 w-full rounded-xl font-semibold"
-              onClick={placeOrder}
-              disabled={!optionsComplete || !quote || placing}
-            >
-              {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : mainButtonText}
-            </Button>
-          )}
-        </>
+      {!nativeButton && (
+        <Button
+          className="tg-primary-button h-11 w-full rounded-xl font-semibold"
+          onClick={placeOrder}
+          disabled={!optionsComplete || !quote || placing}
+        >
+          {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : mainButtonText}
+        </Button>
       )}
     </div>
     </>

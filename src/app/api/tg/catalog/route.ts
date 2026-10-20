@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireTelegramUser, telegramErrorResponse } from '@/lib/telegram/auth';
 import { listActiveCategories, listActiveMerchants, listCatalogItemsLean } from '@/lib/marketplace/catalog';
 import { itemImageUrl } from '@/lib/marketplace/item-images';
-import { isTelegramOrderable } from '@/lib/telegram/orders';
+import { TELEGRAM_ORDERABLE_SELLING_OPTIONS } from '@/lib/telegram/orders';
 
 /**
  * GET /api/tg/catalog?search=&categoryId=&merchantId=
  *
- * Kept small on purpose: no photo data, only a URL for each item's first
- * photo (fetched and cached separately by the webview).
+ * Only items that can be paid for directly (DIRECT_ONLY and BOTH); BNPL_ONLY
+ * items are not listed in Telegram. Kept small on purpose: no photo data, only
+ * a URL for each item's first photo (fetched and cached separately).
  */
 export async function GET(req: NextRequest) {
   try {
@@ -20,8 +21,9 @@ export async function GET(req: NextRequest) {
         search: searchParams.get('search')?.slice(0, 100) || '',
         categoryId: searchParams.get('categoryId') || '',
         merchantId: searchParams.get('merchantId') || '',
+        sellingOptions: TELEGRAM_ORDERABLE_SELLING_OPTIONS,
       }),
-      listActiveCategories(),
+      listActiveCategories({ sellingOptions: TELEGRAM_ORDERABLE_SELLING_OPTIONS }),
       listActiveMerchants(),
     ]);
 
@@ -37,7 +39,6 @@ export async function GET(req: NextRequest) {
         image: itemImageUrl(item.id, 0, item.updatedAt, 400),
         merchant: item.merchant,
         category: item.category,
-        orderable: isTelegramOrderable(item),
       })),
       categories: categories.map(c => ({ id: c.id, name: c.name })),
       merchants: merchants.map(m => ({ id: m.id, name: m.name })),
