@@ -21,13 +21,19 @@ const nextConfig: NextConfig = {
         headers: [
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'no-referrer' },
-          { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
           {
             key: "Strict-Transport-Security",
             value: "max-age=31536000; includeSubDomains; preload",
           },
         ],
+      },
+      {
+        // Everything except the Telegram Mini App (/tg), which Telegram Web
+        // loads in an iframe; its framing is limited by CSP frame-ancestors
+        // in middleware instead.
+        source: '/:path((?!tg$|tg/).*)',
+        headers: [{ key: 'X-Frame-Options', value: 'DENY' }],
       },
       {
         source: '/api/:path*',

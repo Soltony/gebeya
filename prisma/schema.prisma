@@ -908,6 +908,8 @@ model Order {
   loanApplication   LoanApplication? @relation(fields: [loanApplicationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   loanId            String?
   paymentType       String           @default("BNPL")
+  // Where the customer placed the order: SUPER_APP or TELEGRAM.
+  channel           String           @default("SUPER_APP")
   status            String           @default("PENDING_MERCHANT_CONFIRMATION")
   cancelReason      String?
   cancelledBy       String?
@@ -1255,4 +1257,35 @@ model ManualRepaymentConfig {
   updatedById        String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+// ================================================= //
+//      TELEGRAM BOT & MINI APP                      //
+// ================================================= //
+
+/// A Telegram account that has opened the Mini App or written to the bot.
+/// borrowerId is only set after the user shares their own contact with the
+/// bot, so it is a phone Telegram has verified. It is deliberately not
+/// @unique: SQL Server allows a single NULL in a unique index, and most rows
+/// stay unlinked. Code keeps one linked row per phone (see linkTelegramPhone).
+model TelegramUser {
+  id             String    @id @default(cuid())
+  /// Telegram user ids exceed 32 bits, so they are stored as strings.
+  telegramUserId String    @unique
+  /// Private chat with the bot; null until the user has started a chat.
+  chatId         String?
+  username       String?
+  firstName      String?
+  lastName       String?
+  languageCode   String?
+  /// Normalized 251XXXXXXXXX phone, the same key Borrower.id uses.
+  borrowerId     String?
+  phoneLinkedAt  DateTime?
+  /// Set when Telegram reports the bot is blocked; cleared when the user returns.
+  botBlockedAt   DateTime?
+  lastSeenAt     DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([borrowerId])
 }

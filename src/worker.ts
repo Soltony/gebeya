@@ -143,6 +143,47 @@ async function runCbsNplRetryServiceLoop() {
   }
 }
 
+// Long-polls Telegram for bot updates. Only for TELEGRAM_UPDATE_MODE=polling,
+// i.e. hosts Telegram cannot reach with a webhook. Run a single instance:
+// Telegram rejects concurrent getUpdates calls for the same bot.
+async function runTelegramBotPollingLoop() {
+  const { getUpdateMode } = await import('./lib/telegram/config');
+  const { callTelegram, ALLOWED_UPDATES, TelegramApiError } = await import('./lib/telegram/bot-api');
+  const { handleTelegramUpdate } = await import('./lib/telegram/bot');
+  type Update = import('./lib/telegram/bot-api').TelegramUpdate;
+
+  if (getUpdateMode() !== 'polling') {
+    throw new Error('telegram-bot polling requires TELEGRAM_UPDATE_MODE=polling (webhook mode uses /api/telegram/webhook).');
+  }
+
+  // getUpdates is refused while a webhook is registered.
+  await callTelegram('deleteWebhook', { drop_pending_updates: false });
+  logger.info('Telegram bot polling started');
+
+  let offset = 0;
+  while (true) {
+    try {
+      const updates = await callTelegram<Update[]>(
+        'getUpdates',
+        { offset, timeout: 30, allowed_updates: ALLOWED_UPDATES },
+        { timeoutMs: 45_000 },
+      );
+      for (const update of updates) {
+        offset = update.update_id + 1;
+        try {
+          await handleTelegramUpdate(update);
+        } catch (error) {
+          logger.error(`Telegram update ${update.update_id} failed: ${String(error)}`);
+        }
+      }
+    } catch (error) {
+      const waitSeconds = error instanceof TelegramApiError && error.retryAfterSeconds ? error.retryAfterSeconds : 5;
+      logger.error(`Telegram getUpdates failed, retrying in ${waitSeconds}s: ${String(error)}`);
+      await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+    }
+  }
+}
+
 
 async function main() {
   const task = process.argv[2];
@@ -237,6 +278,10 @@ async function main() {
       case 'cbs-npl-retry-service':
         logger.info('Starting cbs-npl-retry-service long-running loop');
         await runCbsNplRetryServiceLoop();
+        break;
+      case 'telegram-bot':
+        logger.info('Starting telegram-bot polling loop');
+        await runTelegramBotPollingLoop();
         break;
       default:
         console.error(`Error: Unknown task "${task}".`);

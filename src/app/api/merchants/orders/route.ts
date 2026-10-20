@@ -1,8 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { after, NextRequest, NextResponse } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/user';
 import { createAuditLog } from '@/lib/audit-log';
+import { notifyTelegramOrderUpdate } from '@/lib/telegram/notifications';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -73,6 +74,7 @@ export async function GET(req: NextRequest) {
           totalAmount: true,
           currency: true,
           paymentType: true,
+          channel: true,
           status: true,
           cancelReason: true,
           createdAt: true,
@@ -182,6 +184,12 @@ export async function PUT(req: NextRequest) {
     }
 
     await createAuditLog({ actorId: user.id, action: 'UPDATE_ORDER_STATUS', entity: 'Order', entityId: id, details: JSON.stringify({ status, cancelReason }) });
+
+    // Customers who ordered from Telegram hear about it in the bot chat.
+    if (order.channel === 'TELEGRAM' && order.status !== status) {
+      after(() => notifyTelegramOrderUpdate(id, 'STATUS_CHANGED'));
+    }
+
     return NextResponse.json(updated);
   } catch (error) {
     console.error('Error updating order:', error);

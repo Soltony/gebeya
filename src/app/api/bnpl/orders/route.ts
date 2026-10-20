@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { calculateTotalRepayable, calculateInclusiveTax } from '@/lib/loan-calculator';
 import { addDays } from 'date-fns';
-import { getDiscountEffectiveAmount, isDiscountActive, pickBestDiscount } from '@/lib/discount-utils';
+import { OrderPricingError, priceOrderItems, toOrderItemsCreate } from '@/lib/marketplace/order-pricing';
 import { areDisbursementsEnabled } from '@/lib/disbursement-control';
 import { validateBorrowerEligibility } from '@/actions/borrower-validation';
 import { getUserFromSession } from '@/lib/user';
@@ -493,6 +493,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Price before creating the loan application so an invalid item does not
+    // leave an orphaned PENDING_DELIVERY application behind.
+    let priced;
+    try {
+      priced = await priceOrderItems(items);
+    } catch (error) {
+      if (error instanceof OrderPricingError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
+
     // ── Create a LoanApplication with PENDING_DELIVERY status (BNPL only) ──
     // No loan is created yet — that happens on delivery confirmation.
     let loanApplication: any = null;
@@ -507,100 +519,15 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    let requiresConfirmation = false;
-    let totalAmount = 0;
-    const orderItemsData: any[] = [];
-    const orderItemScopes: Array<{ merchantId: string | null; categoryId: string | null }> = [];
-
-    for (const orderItem of items) {
-      const item = await prisma.item.findUnique({
-        where: { id: orderItem.itemId },
-        include: { variants: true, optionGroups: { include: { values: true } } },
-      });
-
-      if (!item || item.status !== 'ACTIVE') {
-        return NextResponse.json({ error: `Item ${orderItem.itemId} not found or inactive` }, { status: 400 });
-      }
-
-      // If any item in the order needs the merchant to confirm stock, the whole
-      // order waits for that confirmation before moving to delivery.
-      if (item.requiresMerchantAvailabilityConfirmation) {
-        requiresConfirmation = true;
-      }
-
-      let unitPrice = item.price;
-
-      // Apply variant price if selected
-      if (orderItem.variantId) {
-        const variant = item.variants.find(v => v.id === orderItem.variantId);
-        if (variant) unitPrice = variant.price;
-      }
-
-      // Calculate option price deltas
-      let optionDelta = 0;
-      const optionSelections: any[] = [];
-      if (orderItem.optionSelections?.length) {
-        for (const sel of orderItem.optionSelections) {
-          const group = item.optionGroups.find(g => g.values.some(v => v.id === sel.optionValueId));
-          const value = group?.values.find(v => v.id === sel.optionValueId);
-          if (value) {
-            optionDelta += value.priceDelta;
-            optionSelections.push({ optionValueId: value.id, priceDelta: value.priceDelta });
-          }
-        }
-      }
-
-      unitPrice += optionDelta;
-      const quantity = orderItem.quantity || 1;
-      const lineTotal = unitPrice * quantity;
-      totalAmount += lineTotal;
-
-      orderItemsData.push({
-        itemId: orderItem.itemId,
-        variantId: orderItem.variantId || null,
-        quantity,
-        unitPrice,
-        lineTotal,
-        optionSelections: optionSelections.length ? { create: optionSelections } : undefined,
-      });
-      orderItemScopes.push({ merchantId: item.merchantId, categoryId: item.categoryId });
-    }
-
-    // Apply discount rules
-    for (const [index, oid] of orderItemsData.entries()) {
-      const scope = orderItemScopes[index];
-      const now = new Date();
-      const discounts = await prisma.discountRule.findMany({
-        where: {
-          status: 'ACTIVE',
-          OR: [
-            { itemId: oid.itemId },
-            ...(scope?.categoryId ? [{ categoryId: scope.categoryId, itemId: null }] : []),
-          ],
-          ...(scope?.merchantId ? { merchantId: scope.merchantId } : {}),
-          minQuantity: { lte: oid.quantity },
-        },
-      });
-
-      const applicableDiscounts = discounts.filter(discount => isDiscountActive(discount, now));
-      const discount = pickBestDiscount(oid.lineTotal, applicableDiscounts);
-
-      if (discount) {
-        const discountAmount = getDiscountEffectiveAmount(oid.lineTotal, discount);
-        totalAmount -= discountAmount;
-        oid.lineTotal -= discountAmount;
-      }
-    }
-
     const order = await prisma.order.create({
       data: {
         borrowerId,
         merchantId,
         loanApplicationId: loanApplication?.id || null,
-        totalAmount: Math.max(0, totalAmount),
+        totalAmount: priced.totalAmount,
         paymentType: isDirectPayment ? 'DIRECT' : 'BNPL',
-        status: requiresConfirmation ? 'PENDING_MERCHANT_CONFIRMATION' : 'ON_DELIVERY',
-        orderItems: { create: orderItemsData },
+        status: priced.requiresConfirmation ? 'PENDING_MERCHANT_CONFIRMATION' : 'ON_DELIVERY',
+        orderItems: { create: toOrderItemsCreate(priced) },
       },
       include: {
         merchant: true,

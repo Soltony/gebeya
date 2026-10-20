@@ -129,6 +129,11 @@ export const config = {
     '/api/borrowers/agreements',
     '/api/payments',
     '/api/loans',
+
+    // Telegram Mini App pages (CSP + headers only; /api/tg/* authenticates
+    // each request with Telegram initData itself)
+    '/tg',
+    '/tg/:path*',
   ],
 };
 
@@ -160,15 +165,19 @@ export default async function middleware(req: NextRequest) {
   // Generate nonce
   const nonce = btoa(self.crypto.randomUUID());
 
+  // The Telegram Mini App loads Telegram's SDK script and is framed by
+  // Telegram Web; every other page keeps the stricter policy.
+  const isTelegramMiniApp = path === '/tg' || path.startsWith('/tg/');
+
   // Build CSP
   const cspHeader = `
     default-src 'self';
-    script-src 'self' 'nonce-${nonce}';
+    script-src 'self' 'nonce-${nonce}'${isTelegramMiniApp ? ' https://telegram.org' : ''};
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
     font-src 'self' https://fonts.gstatic.com;
     img-src 'self' data: blob: https://placehold.co https://play-lh.googleusercontent.com;
     connect-src 'self';
-    frame-ancestors 'self';
+    frame-ancestors 'self'${isTelegramMiniApp ? ' https://web.telegram.org' : ''};
     media-src 'self';
     object-src 'none';
     base-uri 'self';
@@ -414,5 +423,8 @@ export default async function middleware(req: NextRequest) {
   }
 
   // FINAL RETURN WITH HEADERS APPLIED
-  return withSecurityHeaders(response, cspHeader, nonce);
+  const finalResponse = withSecurityHeaders(response, cspHeader, nonce);
+  // Framing of /tg is governed by the CSP frame-ancestors above.
+  if (isTelegramMiniApp) finalResponse.headers.delete('X-Frame-Options');
+  return finalResponse;
 }

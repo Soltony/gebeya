@@ -128,3 +128,64 @@ EXTERNAL_DISTRIBUTION_URL="http://192.168.100.56:8280/nibtera-loan/distribution"
 EXTERNAL_API_USERNAME="nibLoan"
 EXTERNAL_API_PASSWORD="123456"
 ```
+
+---
+
+## 🤖 Telegram Bot & Mini App
+
+The marketplace is also available as a Telegram Mini App at `/tg`, with a bot that links the customer's phone number and sends order updates. Customers can browse, place **direct** (non-credit) orders for items whose selling option is `DIRECT_ONLY` or `BOTH`, track them and cancel them. BNPL-only items are shown but can only be bought in the Nib app. Payment is not collected in Telegram yet; Telegram orders are tagged with a **Telegram** badge on the admin Orders page.
+
+### 1. Create the bot (BotFather)
+
+1. `/newbot` → note the token and username.
+2. `/newapp` → choose the bot, give the Mini App a short name (e.g. `shop`) and set its URL to `TELEGRAM_MINIAPP_URL`.
+3. `/setjoingroups` → Disable (the bot only serves private chats).
+
+### 2. Configure the environment
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token. Unset = Telegram features disabled. |
+| `TELEGRAM_MINIAPP_URL` | yes | Public HTTPS URL of `/tg`, e.g. `https://nibterabnpl.nibbank.com.et/tg`. |
+| `TELEGRAM_UPDATE_MODE` | yes | `webhook` (Telegram calls us) or `polling` (worker calls Telegram). |
+| `TELEGRAM_WEBHOOK_URL` | webhook | Public URL of `/api/telegram/webhook`. |
+| `TELEGRAM_WEBHOOK_SECRET` | webhook | 16–256 chars of `A-Z a-z 0-9 _ -`; checked on every webhook call. |
+| `TELEGRAM_BOT_USERNAME` | no | Enables share links and the "open the bot" link. |
+| `TELEGRAM_MINIAPP_SHORT_NAME` | no | Enables `t.me/<bot>/<app>?startapp=item_<id>` deep links. |
+| `TELEGRAM_API_BASE_URL` | no | Proxy or self-hosted Bot API server if `api.telegram.org` is blocked. |
+| `TELEGRAM_INIT_DATA_MAX_AGE_SECONDS` | no | Mini App session lifetime, default 86400. |
+| `TELEGRAM_SUPPORT_TEXT` | no | Appended to the bot's `/help` reply. |
+| `TELEGRAM_DEV_BYPASS_USER_ID` | dev only | Open `/tg` in a normal browser as this Telegram user (ignored in production). |
+
+### 3. Apply the database migration
+
+```bash
+npx prisma migrate deploy
+```
+
+Adds the `TelegramUser` table and an `Order.channel` column (`SUPER_APP` default, `TELEGRAM` for Mini App orders).
+
+### 4. Register the bot settings with Telegram
+
+```bash
+npx tsx -r tsconfig-paths/register scripts/telegram-setup.ts          # commands, menu button, webhook/polling
+npx tsx -r tsconfig-paths/register scripts/telegram-setup.ts --info   # show current webhook + menu state
+```
+
+Re-run after changing any `TELEGRAM_*` value.
+
+### 5. Receive updates
+
+* **Webhook mode:** nothing else to run — the app handles `POST /api/telegram/webhook`.
+* **Polling mode** (server not reachable from the internet): run exactly one instance of
+    ```bash
+    npm run run:worker -- telegram-bot
+    ```
+    The worker does not read `.env`, so the `TELEGRAM_*` variables must be set in its environment (system variables or `set` lines in its `.cmd` wrapper). Rebuild `dist/worker.cjs` with `npm run build:worker` so it includes the `telegram-bot` task.
+* Either way, `TELEGRAM_MINIAPP_URL` must be reachable over HTTPS from customers' phones — the Mini App page and `/api/tg/*` are loaded by their Telegram app.
+
+### How it fits together
+
+* **Identity:** the Mini App sends Telegram's signed `initData` on every `/api/tg/*` request (`Authorization: tma …`); the server verifies it with the bot token. The customer's phone is linked only from a contact they share with the bot for their own account, normalized to the `251XXXXXXXXX` borrower id.
+* **Pricing:** `src/lib/marketplace/order-pricing.ts` is shared with the super-app order route, so both channels charge the same for the same basket.
+* **Notifications:** when a merchant changes a Telegram order's status in the admin panel, the customer gets a bot message with a button back to the order.

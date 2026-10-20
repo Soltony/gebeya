@@ -62,6 +62,7 @@ type MerchantOrderRow = {
   totalAmount: number;
   currency: string;
   paymentType: string;
+  channel?: string;
   status: string;
   cancelReason: string | null;
   createdAt: string;
@@ -582,6 +583,15 @@ export default function MerchantOrdersPage() {
                           >
                             {order.paymentType === 'DIRECT' ? 'Direct' : 'BNPL'}
                           </Badge>
+                          {order.channel === 'TELEGRAM' && (
+                            <Badge
+                              className="ml-1 bg-sky-100 text-sky-800 border-sky-300"
+                              variant="outline"
+                              title="Placed from the Telegram Mini App. Payment is not collected in Telegram yet."
+                            >
+                              Telegram
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell>
                           <Badge className={statusColor[order.status] || ''} variant="outline">

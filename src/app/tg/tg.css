@@ -1,0 +1,74 @@
+/*
+ * Telegram Mini App theme. telegram-web-app.js sets the --tg-theme-* variables
+ * from the user's Telegram theme (light or dark); the fallbacks apply in a
+ * normal browser during local development.
+ */
+.tg-app {
+  --tg-bg: var(--tg-theme-bg-color, #ffffff);
+  --tg-text: var(--tg-theme-text-color, #111827);
+  --tg-hint-color: var(--tg-theme-hint-color, #6b7280);
+  --tg-link-color: var(--tg-theme-link-color, #2481cc);
+  --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  --tg-section-bg: var(--tg-theme-section-bg-color, var(--tg-bg));
+  --tg-separator: var(--tg-theme-section-separator-color, rgba(127, 127, 127, 0.2));
+  --tg-destructive: var(--tg-theme-destructive-text-color, #dc2626);
+
+  min-height: var(--tg-viewport-stable-height, 100vh);
+  background: var(--tg-secondary-bg);
+  color: var(--tg-text);
+  /* Leave room for Telegram's native bottom button. */
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+}
+
+/* Match the page behind the app (overscroll, short pages) to the Telegram theme. */
+body:has(.tg-app) {
+  background: var(--tg-theme-secondary-bg-color, #f3f4f6);
+}
+
+.tg-app .tg-section {
+  background: var(--tg-section-bg);
+  border-radius: 14px;
+}
+
+.tg-app .tg-hint {
+  color: var(--tg-hint-color);
+}
+
+.tg-app .tg-link {
+  color: var(--tg-link-color);
+}
+
+.tg-app .tg-destructive {
+  color: var(--tg-destructive);
+}
+
+.tg-app .tg-separator {
+  border-color: var(--tg-separator);
+}
+
+.tg-app .tg-input {
+  background: var(--tg-section-bg);
+  color: var(--tg-text);
+  border-color: var(--tg-separator);
+}
+
+.tg-app .tg-chip {
+  background: var(--tg-section-bg);
+  color: var(--tg-text);
+  border: 1px solid var(--tg-separator);
+}
+
+.tg-app .tg-chip[data-active='true'] {
+  background: #fdb913;
+  border-color: #fdb913;
+  color: #000000;
+}
+
+.tg-app .tg-primary-button {
+  background: #fdb913;
+  color: #000000;
+}
+
+.tg-app .tg-primary-button:hover {
+  background: #e3a400;
+}
