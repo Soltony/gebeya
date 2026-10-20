@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { formatEtb } from '@/lib/marketplace/order-status';
 import { useTelegram } from './telegram-provider';
 import { useBackButton, useMainButton } from './use-telegram-buttons';
+import { BackBar } from './back-bar';
 import type { ItemDetail, OrderQuote } from './types';
 
 const MAX_QUANTITY = 99;
@@ -29,7 +30,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
     if (window.history.length > 1) router.back();
     else router.replace('/tg');
   }, [router]);
-  useBackButton(goBack);
+  const nativeBack = useBackButton(goBack);
 
   useEffect(() => {
     api<ItemDetail>(`/api/tg/catalog/${encodeURIComponent(itemId)}`)
@@ -135,18 +136,32 @@ export function ItemScreen({ itemId }: { itemId: string }) {
     else window.open(url, '_blank');
   };
 
-  if (loadError) return <p className="px-6 py-16 text-center text-sm tg-destructive">{loadError}</p>;
+  const backBar = <BackBar onBack={goBack} hidden={nativeBack} title={item?.name} />;
+
+  if (loadError) {
+    return (
+      <>
+        {backBar}
+        <p className="px-6 py-16 text-center text-sm tg-destructive">{loadError}</p>
+      </>
+    );
+  }
   if (!item) {
     return (
-      <div className="space-y-3 p-4">
-        <Skeleton className="aspect-square w-full rounded-2xl" />
-        <Skeleton className="h-6 w-2/3" />
-        <Skeleton className="h-4 w-1/3" />
-      </div>
+      <>
+        {backBar}
+        <div className="space-y-3 p-4">
+          <Skeleton className="aspect-square w-full rounded-2xl" />
+          <Skeleton className="h-6 w-2/3" />
+          <Skeleton className="h-4 w-1/3" />
+        </div>
+      </>
     );
   }
 
   return (
+    <>
+    {backBar}
     <div className="space-y-3 p-4">
       <div className="tg-section overflow-hidden">
         <div className="relative aspect-square bg-black/5">
@@ -282,5 +297,6 @@ export function ItemScreen({ itemId }: { itemId: string }) {
         </>
       )}
     </div>
+    </>
   );
 }

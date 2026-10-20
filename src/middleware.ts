@@ -165,14 +165,14 @@ export default async function middleware(req: NextRequest) {
   // Generate nonce
   const nonce = btoa(self.crypto.randomUUID());
 
-  // The Telegram Mini App loads Telegram's SDK script and is framed by
-  // Telegram Web; every other page keeps the stricter policy.
+  // The Telegram Mini App is framed by Telegram Web (its SDK script is served
+  // from our own origin); every other page keeps the stricter policy.
   const isTelegramMiniApp = path === '/tg' || path.startsWith('/tg/');
 
   // Build CSP
   const cspHeader = `
     default-src 'self';
-    script-src 'self' 'nonce-${nonce}'${isTelegramMiniApp ? ' https://telegram.org' : ''};
+    script-src 'self' 'nonce-${nonce}';
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
     font-src 'self' https://fonts.gstatic.com;
     img-src 'self' data: blob: https://placehold.co https://play-lh.googleusercontent.com;

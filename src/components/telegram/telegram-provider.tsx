@@ -46,18 +46,31 @@ const LAUNCH_INIT_DATA_KEY = 'tg-launch-init-data';
 const LINK_POLL_ATTEMPTS = 15;
 // Stop waiting for telegram-web-app.js after this; the app still works without it.
 const SDK_WAIT_MS = 5000;
+/**
+ * Telegram's Mini App SDK, served from our own origin (public/) because
+ * telegram.org is not reliably reachable from customers' networks. Refresh it
+ * with: curl -o public/telegram-web-app.js https://telegram.org/js/telegram-web-app.js
+ */
+const SDK_SRC = '/telegram-web-app.js';
+// Where telegram-web-app.js caches its launch parameters (see sessionStorageGet in the SDK).
+const SDK_INIT_PARAMS_KEY = '__telegram__initParams';
 
 /**
  * Telegram passes the signed launch data in the URL hash (#tgWebAppData=...).
  * Read it as soon as this module loads, so signing in does not depend on the
- * telegram.org SDK script loading in the webview (it can be blocked or slow),
- * and keep it for in-app reloads, which drop the hash.
+ * SDK script, and keep it for in-app reloads, which drop the hash. The full
+ * hash is also seeded into the SDK's own cache: the SDK reads location.hash
+ * when it runs, and by then client-side navigation may have replaced the URL.
  */
 function captureLaunchInitData(): string {
   if (typeof window === 'undefined') return '';
-  const fromHash = new URLSearchParams(window.location.hash.slice(1)).get('tgWebAppData') || '';
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const fromHash = hashParams.get('tgWebAppData') || '';
   try {
-    if (fromHash) sessionStorage.setItem(LAUNCH_INIT_DATA_KEY, fromHash);
+    if (fromHash) {
+      sessionStorage.setItem(LAUNCH_INIT_DATA_KEY, fromHash);
+      sessionStorage.setItem(SDK_INIT_PARAMS_KEY, JSON.stringify(Object.fromEntries(hashParams)));
+    }
     return fromHash || sessionStorage.getItem(LAUNCH_INIT_DATA_KEY) || '';
   } catch {
     return fromHash;
@@ -226,7 +239,7 @@ export function TelegramProvider({
   return (
     <div className="tg-app">
       <Script
-        src="https://telegram.org/js/telegram-web-app.js"
+        src={SDK_SRC}
         strategy="afterInteractive"
         nonce={nonce}
         onReady={() => settleSdk('loaded')}

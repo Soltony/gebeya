@@ -4,8 +4,12 @@ import { useEffect } from 'react';
 import { useTelegram } from './telegram-provider';
 import { BRAND_BUTTON } from './webapp';
 
-/** Shows Telegram's native back button while `onBack` is set. */
-export function useBackButton(onBack: (() => void) | null) {
+/**
+ * Shows Telegram's native back button (the header arrow, also triggered by
+ * Android's back key) while `onBack` is set. Returns false when the native
+ * button is unavailable, in which case the screen renders <BackBar>.
+ */
+export function useBackButton(onBack: (() => void) | null): boolean {
   const { webApp } = useTelegram();
   useEffect(() => {
     const button = webApp?.BackButton;
@@ -21,6 +25,7 @@ export function useBackButton(onBack: (() => void) | null) {
       button.hide();
     };
   }, [webApp, onBack]);
+  return Boolean(webApp);
 }
 
 /**

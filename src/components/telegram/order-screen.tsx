@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, Phone } from 'lucide-react';
+import { Check, Loader2, Package, Phone, ShoppingBag } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -14,6 +15,7 @@ import {
 } from '@/lib/marketplace/order-status';
 import { useTelegram } from './telegram-provider';
 import { useBackButton } from './use-telegram-buttons';
+import { BackBar } from './back-bar';
 import { OrderStatusBadge } from './order-status-badge';
 import type { CustomerOrder } from './types';
 
@@ -37,7 +39,7 @@ export function OrderScreen({ orderId, justPlaced }: { orderId: string; justPlac
     if (justPlaced || window.history.length <= 1) router.replace('/tg/orders');
     else router.back();
   }, [router, justPlaced]);
-  useBackButton(goBack);
+  const nativeBack = useBackButton(goBack);
 
   const load = useCallback(() => {
     return api<{ order: CustomerOrder }>(`/api/tg/orders/${encodeURIComponent(orderId)}`)
@@ -82,13 +84,26 @@ export function OrderScreen({ orderId, justPlaced }: { orderId: string; justPlac
     }
   };
 
-  if (error) return <p className="px-6 py-16 text-center text-sm tg-destructive">{error}</p>;
+  const backBar = <BackBar onBack={goBack} hidden={nativeBack} title={order ? `Order ${orderRef(order.id)}` : 'Order'} />;
+
+  if (error) {
+    return (
+      <>
+        {backBar}
+        <p className="px-6 py-16 text-center text-sm tg-destructive">{error}</p>
+        <OrderScreenLinks />
+      </>
+    );
+  }
   if (!order) {
     return (
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-28 rounded-2xl" />
-        <Skeleton className="h-40 rounded-2xl" />
-      </div>
+      <>
+        {backBar}
+        <div className="space-y-3 p-4">
+          <Skeleton className="h-28 rounded-2xl" />
+          <Skeleton className="h-40 rounded-2xl" />
+        </div>
+      </>
     );
   }
 
@@ -96,6 +111,8 @@ export function OrderScreen({ orderId, justPlaced }: { orderId: string; justPlac
   const cancellable = CUSTOMER_CANCELLABLE_STATUSES.includes(order.status as OrderStatus);
 
   return (
+    <>
+    {backBar}
     <div className="space-y-3 p-4">
       {justPlaced && order.status !== 'CANCELLED' && (
         <div className="tg-section border border-green-300 p-4 text-sm">
@@ -186,6 +203,24 @@ export function OrderScreen({ orderId, justPlaced }: { orderId: string; justPlac
           {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Cancel order'}
         </Button>
       )}
+    </div>
+    <OrderScreenLinks />
+    </>
+  );
+}
+
+/** Ways out of an order screen, so it is never a dead end. */
+function OrderScreenLinks() {
+  return (
+    <div className="flex gap-2 px-4 pb-4">
+      <Link href="/tg" className="tg-chip flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-medium">
+        <ShoppingBag className="h-4 w-4" />
+        Continue shopping
+      </Link>
+      <Link href="/tg/orders" className="tg-chip flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-medium">
+        <Package className="h-4 w-4" />
+        My orders
+      </Link>
     </div>
   );
 }

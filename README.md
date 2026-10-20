@@ -181,7 +181,7 @@ Re-run after changing any `TELEGRAM_*` value.
     ```bash
     npm run run:worker -- telegram-bot
     ```
-    The worker does not read `.env`, so the `TELEGRAM_*` variables must be set in its environment (system variables or `set` lines in its `.cmd` wrapper). Rebuild `dist/worker.cjs` with `npm run build:worker` so it includes the `telegram-bot` task.
+    Start it from the project folder: the worker has no dotenv loader of its own and picks up `.env` through Prisma when it starts (system environment variables take precedence). Rebuild `dist/worker.cjs` with `npm run build:worker` so it includes the `telegram-bot` task. Run only one poller (`node dist/worker.cjs telegram-bot` *or* `npm run run:worker -- telegram-bot`) — Telegram rejects a second one with `409 Conflict`.
 * Either way, `TELEGRAM_MINIAPP_URL` must be reachable over HTTPS from customers' phones — the Mini App page and `/api/tg/*` are loaded by their Telegram app.
 
 ### How it fits together
@@ -189,3 +189,4 @@ Re-run after changing any `TELEGRAM_*` value.
 * **Identity:** the Mini App sends Telegram's signed `initData` on every `/api/tg/*` request (`Authorization: tma …`); the server verifies it with the bot token. The customer's phone is linked only from a contact they share with the bot for their own account, normalized to the `251XXXXXXXXX` borrower id.
 * **Pricing:** `src/lib/marketplace/order-pricing.ts` is shared with the super-app order route, so both channels charge the same for the same basket.
 * **Notifications:** when a merchant changes a Telegram order's status in the admin panel, the customer gets a bot message with a button back to the order.
+* **Telegram SDK:** `public/telegram-web-app.js` is a copy of Telegram's Mini App script, served from our own domain because `telegram.org` is not reliably reachable from customers' networks. It provides Telegram's back arrow, bottom button and theme. Refresh it occasionally with `curl -o public/telegram-web-app.js https://telegram.org/js/telegram-web-app.js`. If it fails to load, the app falls back to in-page Back and Order buttons.
