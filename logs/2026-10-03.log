@@ -1,0 +1,23 @@
+[2026-10-03T13:19:35.189Z] [pid:10340] [INFO] Worker started task=affiliate-service
+[2026-10-03T13:19:35.191Z] [pid:10340] [INFO] Starting affiliate-service long-running loop
+[2026-10-03T13:19:35.192Z] [pid:10340] [INFO] Affiliate commission service started
+[2026-10-03T13:19:35.823Z] [pid:10340] [INFO] [affiliate] run finished referrals=0 created=0 takenBack=0 released=0 drafts=0 errors=0
+[2026-10-03T13:19:35.839Z] [pid:10340] [INFO] Affiliate commission service sleeping for 1440m
+[2026-10-03T13:24:35.576Z] [pid:38692] [INFO] Worker started task=affiliate-service
+[2026-10-03T13:24:35.577Z] [pid:38692] [INFO] Starting affiliate-service long-running loop
+[2026-10-03T13:24:35.578Z] [pid:38692] [INFO] Affiliate commission service started
+[2026-10-03T13:24:35.895Z] [pid:38692] [INFO] [affiliate] run finished referrals=0 created=0 takenBack=0 released=0 drafts=0 errors=0
+[2026-10-03T13:24:35.903Z] [pid:38692] [INFO] Affiliate commission service sleeping for 1440m
+[2026-10-03T14:06:37.846Z] [pid:44176] [INFO] Worker started task=affiliate-commissions
+[2026-10-03T14:06:37.847Z] [pid:44176] [INFO] Running one-off affiliate-commissions
+[2026-10-03T14:06:38.274Z] [pid:44176] [INFO] [affiliate] run finished referrals=1 created=2 takenBack=0 released=2 drafts=0 errors=0
+[2026-10-03T14:08:15.006Z] [pid:33868] [INFO] Worker started task=affiliate-commissions
+[2026-10-03T14:08:15.008Z] [pid:33868] [INFO] Running one-off affiliate-commissions
+[2026-10-03T14:08:15.360Z] [pid:33868] [INFO] [affiliate] run finished referrals=1 created=0 takenBack=0 released=0 drafts=0 errors=0
+[2026-10-03T14:57:43.637Z] [pid:28784] [INFO] Worker started task=affiliate-service
+[2026-10-03T14:57:43.656Z] [pid:28784] [INFO] Starting affiliate-service long-running loop
+[2026-10-03T14:57:43.657Z] [pid:28784] [INFO] Affiliate commission service started
+[2026-10-03T14:57:44.438Z] [pid:28784] [INFO] [affiliate] run finished referrals=1 created=0 takenBack=0 released=0 drafts=0 errors=0
+[2026-10-03T14:57:44.449Z] [pid:28784] [INFO] Affiliate commission service sleeping for 1440m
+[2026-10-03T18:27:05.676Z] [pid:41848] [INFO] [affiliate] payouts sent=1 failed=0 skipped=0
+[2026-10-03T18:43:19.428Z] [pid:4516] [INFO] [affiliate] payouts sent=1 failed=0 skipped=0

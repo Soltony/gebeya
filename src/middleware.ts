@@ -34,6 +34,7 @@ function getAllowedRolesForPath(path: string): string[] | undefined {
     '/api/merchants': '/admin/merchants',
     '/api/branches': '/admin/branch',
     '/api/inventory': '/admin/merchants',
+    '/api/affiliates': '/admin/affiliates',
   };
 
   for (const prefix in apiPrefixToMenuPath) {
@@ -63,7 +64,7 @@ function withSecurityHeaders(res: NextResponse, csp: string, nonce: string) {
 const protectedAdminRoutes = [
   '/admin', '/api/admin', '/api/audit-logs', '/api/approvals', '/api/roles',
   '/api/settings', '/api/providers', '/api/users', '/api/reports',
-  '/api/merchants', '/api/branches', '/api/inventory'
+  '/api/merchants', '/api/branches', '/api/inventory', '/api/affiliates'
 ];
 
 // Routes that enforce their own authentication instead of the admin browser
@@ -73,7 +74,7 @@ const protectedAdminRoutes = [
 const selfAuthenticatedAdminRoutes = ['/api/admin/data-fixes/'];
 const publicRoutes = ['/admin/login', '/loan/connect', '/admin/change-password'];
 
-const protectedMiniAppRoutes = ['/loan', '/dashboard', '/history', '/bnpl'];
+const protectedMiniAppRoutes = ['/loan', '/dashboard', '/history', '/bnpl', '/earn'];
 const publicMiniAppRoutes = ['/loan/connect'];
 
 export const config = {
@@ -116,6 +117,8 @@ export const config = {
     '/dashboard/:path*',
     '/history',
     '/history/:path*',
+    '/earn',
+    '/earn/:path*',
 
     // BNPL order pages + APIs
     '/bnpl',

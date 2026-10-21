@@ -17,6 +17,7 @@ const permissions = {
     npl: { create: true, read: true, update: true, delete: true },
     "npl-collection": { create: true, read: true, update: true, delete: true },
     "audit-logs": { create: true, read: true, update: true, delete: true },
+    affiliates: { create: true, read: true, update: true, delete: true },
   },
   loanProvider: {
     dashboard: { create: false, read: true, update: false, delete: false },

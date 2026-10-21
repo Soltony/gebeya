@@ -45,6 +45,11 @@ const ENTITY_TO_MODULE: Record<string, string[]> = {
   inventorylevel: ['merchants', 'branch'],
   district: ['branch'],
   branch: ['branch'],
+  affiliateprogram: ['affiliates'],
+  affiliate: ['affiliates'],
+  affiliatepayoutbatch: ['affiliates'],
+  affiliatepointssettings: ['affiliates'],
+  affiliatepointadjustment: ['affiliates'],
 };
 
 export function entityTypeToPermissionKeys(entityType: string) {

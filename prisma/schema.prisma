@@ -1159,3 +1159,254 @@ model NplCbsDeletion {
   @@index([status])
   @@index([createdAt])
 }
+
+// ================================================= //
+//                 AFFILIATE PROGRAM                 //
+// ================================================= //
+
+// An admin-defined affiliate program. Its settings and commission rules live
+// in immutable versions: every approved edit publishes a new version. A
+// referral locks the version that was current when it was made, so an edit
+// only affects referrals made afterwards and never money already earned.
+model AffiliateProgram {
+  id             String                    @id @default(cuid())
+  name           String                    @unique
+  description    String?                   @db.NVarChar(Max)
+  status         String                    @default("ACTIVE") // ACTIVE, PAUSED
+  currentVersion Int                       @default(1)
+  // Set while the program is paused. Events that happen while a program is
+  // paused never earn a commission, even after it is resumed.
+  pausedAt       DateTime?
+  // JSON array of finished pause windows: [{ "from": ISO date, "to": ISO date }]
+  pausedPeriods  String?                   @db.NVarChar(Max)
+  versions       AffiliateProgramVersion[]
+  affiliates     Affiliate[]
+  payoutBatches  AffiliatePayoutBatch[]
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+}
+
+model AffiliateProgramVersion {
+  id            String              @id @default(cuid())
+  programId     String
+  program       AffiliateProgram    @relation(fields: [programId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  version       Int
+  // JSON AffiliateProgramConfig, validated by src/lib/affiliate/config.ts
+  config        String              @db.NVarChar(Max)
+  publishedAt   DateTime            @default(now())
+  publishedById String? // maker of the approved change
+  referrals     AffiliateReferral[]
+
+  @@unique([programId, version])
+}
+
+model Affiliate {
+  id                String                      @id @default(cuid())
+  // Code a referred customer enters in the mini-app.
+  code              String                      @unique
+  type              String // AGENT, BORROWER, MERCHANT, PARTNER, STAFF
+  name              String
+  phoneNumber       String                      @unique
+  email             String?
+  // CBS account commissions are paid into. When empty, a BORROWER affiliate
+  // is paid into the active account linked to their phone (PhoneAccount).
+  payoutAccount     String?
+  programId         String
+  program           AffiliateProgram            @relation(fields: [programId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  status            String                      @default("ACTIVE") // ACTIVE, SUSPENDED
+  suspendedReason   String?                     @db.NVarChar(Max)
+  suspendedAt       DateTime?
+  // ADMIN: added through maker-checker. SELF: a customer who got their own
+  // code on the mini-app's Earn page.
+  source            String                      @default("ADMIN")
+  // Set when a self-joined customer replaced the generated code (allowed once).
+  codeChangedAt     DateTime?
+  pointTransactions AffiliatePointTransaction[]
+  referrals         AffiliateReferral[]
+  commissions       AffiliateCommission[]
+  payouts           AffiliatePayout[]
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  @@index([programId])
+  @@index([status])
+}
+
+// A referred customer. borrowerId is unique: a customer can be referred only
+// once, and the referral never moves to another affiliate.
+model AffiliateReferral {
+  id               String                  @id @default(cuid())
+  affiliateId      String
+  affiliate        Affiliate               @relation(fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  programVersionId String
+  programVersion   AffiliateProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  borrowerId       String                  @unique
+  source           String                  @default("CODE") // CODE
+  status           String                  @default("ACTIVE") // ACTIVE, REJECTED
+  rejectedReason   String?                 @db.NVarChar(Max)
+  rejectedAt       DateTime?
+  rejectedById     String?
+  attributedAt     DateTime                @default(now())
+  commissions      AffiliateCommission[]
+
+  @@index([affiliateId])
+  @@index([programVersionId])
+  @@index([status])
+}
+
+// Commission ledger. One row per commission earned (kind EARNED), plus one
+// negative row (kind CLAWBACK) when an already-paid commission is taken back;
+// a clawback is deducted from the beneficiary's next payout.
+model AffiliateCommission {
+  id               String            @id @default(cuid())
+  // Makes the daily job safe to re-run:
+  // EARNED:<referralId>:<ruleId>:<beneficiary>:<sourceId> or CLAWBACK:<commissionId>
+  idempotencyKey   String            @unique
+  kind             String            @default("EARNED") // EARNED, CLAWBACK
+  clawbackOfId     String? // CLAWBACK rows: the EARNED commission taken back
+  referralId       String
+  referral         AffiliateReferral @relation(fields: [referralId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // The referring affiliate, also for welcome bonuses paid to the customer.
+  affiliateId      String
+  affiliate        Affiliate         @relation(fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  beneficiary      String // AFFILIATE, CUSTOMER
+  beneficiaryPhone String // who gets paid: the affiliate's phone or the referred borrowerId
+  ruleId           String
+  ruleName         String?
+  eventType        String // LOAN_DISBURSED, LOAN_REPAID, BNPL_ORDER_DELIVERED, DIRECT_ORDER_PAID
+  sourceType       String // LOAN, ORDER
+  sourceId         String
+  loanId           String?
+  orderId          String?
+  providerId       String? // provider whose product produced the event
+  fundedBy         String // PLATFORM, PROVIDER
+  baseAmount       Float             @default(0)
+  amount           Float
+  // MONEY: paid out (PENDING → PAYABLE → IN_PAYOUT → PAID).
+  // POINTS: credited to the points wallet when the hold ends (PENDING → CREDITED).
+  rewardType       String            @default("MONEY")
+  // POINTS rows: amount × the program's earning rate when the row was recorded.
+  points           Int?
+  status           String            @default("PENDING") // PENDING, PAYABLE, IN_PAYOUT, PAID, CREDITED, REVERSED
+  eventDate        DateTime
+  holdUntil        DateTime
+  payableAt        DateTime?
+  // Copy of the rule (and any cap applied) that produced this row.
+  ruleSnapshot     String            @db.NVarChar(Max)
+  // True once posted to the provider ledger (PROVIDER-funded rows only).
+  ledgerPosted     Boolean           @default(false)
+  reversedReason   String?           @db.NVarChar(Max)
+  reversedAt       DateTime?
+  payoutId         String?
+  payout           AffiliatePayout?  @relation(fields: [payoutId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([affiliateId, status])
+  @@index([referralId])
+  @@index([status, holdUntil])
+  @@index([loanId])
+  @@index([payoutId])
+  @@index([clawbackOfId])
+}
+
+// The points wallet: every change to a person's points, never edited. A
+// balance is the sum of a person's rows.
+model AffiliatePointTransaction {
+  id             String     @id @default(cuid())
+  // One row per business event (EARN:<commissionId>, REVERSAL:<commissionId>,
+  // ADJUST:<changeId>), so a retry never posts twice.
+  idempotencyKey String     @unique
+  // Shown to people and admins, e.g. PTS-261006-7F3K9QAB.
+  reference      String     @unique
+  // Wallet owner: the affiliate's phone, or the referred customer's borrower id.
+  phone          String
+  // Set when the points belong to an affiliate.
+  affiliateId    String?
+  affiliate      Affiliate? @relation(fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  type           String // EARN, REVERSAL, ADJUST
+  points         Int // positive adds, negative removes
+  // Birr behind the points when posted: the reward amount, or points × point value for adjustments.
+  birrValue      Float      @default(0)
+  commissionId   String?
+  programId      String?
+  note           String?    @db.NVarChar(Max)
+  // Adjustments: the maker and the checker.
+  createdById    String?
+  approvedById   String?
+  createdAt      DateTime   @default(now())
+
+  @@index([phone])
+  @@index([affiliateId])
+  @@index([type, createdAt])
+  @@index([commissionId])
+}
+
+// Versioned points settings, changed through maker-checker. The latest version applies.
+model AffiliatePointsSettingsVersion {
+  id            String   @id @default(cuid())
+  version       Int      @unique
+  // JSON PointsSettings, validated by src/lib/affiliate/config.ts
+  config        String   @db.NVarChar(Max)
+  publishedAt   DateTime @default(now())
+  publishedById String?
+}
+
+// Payouts that are approved together through maker-checker.
+model AffiliatePayoutBatch {
+  id              String            @id @default(cuid())
+  programId       String
+  program         AffiliateProgram  @relation(fields: [programId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // DRAFT, PENDING_APPROVAL, APPROVED, COMPLETED, PARTIAL, CANCELLED, REJECTED
+  status          String            @default("DRAFT")
+  source          String            @default("MANUAL") // MANUAL, SCHEDULED
+  totalGross      Float             @default(0)
+  totalTax        Float             @default(0)
+  totalNet        Float             @default(0)
+  payoutCount     Int               @default(0)
+  createdById     String? // null when prepared by the worker
+  submittedById   String?
+  submittedAt     DateTime?
+  pendingChangeId String?
+  approvedById    String?
+  approvedAt      DateTime?
+  completedAt     DateTime?
+  payouts         AffiliatePayout[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([programId])
+  @@index([status])
+}
+
+// One CBS transfer to one beneficiary.
+model AffiliatePayout {
+  id               String                @id @default(cuid())
+  batchId          String
+  batch            AffiliatePayoutBatch  @relation(fields: [batchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  beneficiary      String // AFFILIATE, CUSTOMER
+  affiliateId      String? // set when the beneficiary is an affiliate
+  affiliate        Affiliate?            @relation(fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  beneficiaryPhone String
+  creditAccount    String
+  grossAmount      Float
+  taxAmount        Float                 @default(0)
+  netAmount        Float
+  // DRAFT, PENDING_APPROVAL, APPROVED, SENDING, SUCCESS, FAILED, CANCELLED
+  status           String                @default("DRAFT")
+  transactionId    String?
+  requestPayload   String?               @db.NVarChar(Max)
+  responsePayload  String?               @db.NVarChar(Max)
+  statusCode       Int?
+  errorMessage     String?               @db.NVarChar(Max)
+  attempts         Int                   @default(0)
+  lastAttemptAt    DateTime?
+  paidAt           DateTime?
+  commissions      AffiliateCommission[]
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@index([batchId])
+  @@index([status])
+  @@index([affiliateId])
+}
