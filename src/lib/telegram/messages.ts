@@ -88,6 +88,46 @@ export function orderNotificationText(order: OrderSummary & { cancelReason?: str
   return lines.join('\n');
 }
 
+type PaymentNotice = {
+  to: 'COMPLETED' | 'FAILED' | 'PROCESSING';
+  amount: number;
+  statusDesc: string | null;
+  cbsReference: string | null;
+  orderDelivered: boolean;
+};
+
+export function paymentNotificationText(order: OrderSummary, payment: PaymentNotice): string {
+  const heading = `${orderRef(order.id)} · ${escapeHtml(order.merchant?.name ?? '')}`;
+  switch (payment.to) {
+    case 'COMPLETED':
+      return [
+        '✅ <b>Payment received</b>',
+        heading,
+        '',
+        `Paid: <b>${formatEtb(payment.amount)}</b>`,
+        ...(payment.cbsReference ? [`Bank reference: <code>${escapeHtml(payment.cbsReference)}</code>`] : []),
+        '',
+        payment.orderDelivered ? 'Your order is now marked as delivered. Thank you!' : 'Thank you!',
+      ].join('\n');
+    case 'FAILED':
+      return [
+        '❌ <b>Payment not completed</b>',
+        heading,
+        '',
+        escapeHtml(payment.statusDesc || 'The payment was not approved.'),
+        '',
+        'Open the order to try again.',
+      ].join('\n');
+    case 'PROCESSING':
+      return [
+        '🕒 <b>Confirming your payment</b>',
+        heading,
+        '',
+        "The bank is confirming your payment. Please don't pay again — we'll update the order once it's confirmed.",
+      ].join('\n');
+  }
+}
+
 export function recentOrdersText(orders: OrderSummary[]): string {
   if (orders.length === 0) return "You haven't placed any orders yet.";
   const rows = orders.map(o => {

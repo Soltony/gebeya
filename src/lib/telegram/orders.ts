@@ -4,14 +4,17 @@
  *
  * - Direct (non-credit) orders only, so only DIRECT_ONLY and BOTH items.
  * - One merchant per order, every option group answered, quantities bounded.
- * - Payment is not collected in Telegram yet; orders are placed and tracked,
- *   and the payment/delivery step is added with push payments.
+ * - Nothing is charged when the order is placed. The customer pays on
+ *   delivery with a NIB USSD push (./payments), which marks it DELIVERED.
  */
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { createAuditLog } from '@/lib/audit-log';
 import { OrderPricingError, priceOrderItems, toOrderItemsCreate, type PricedOrder } from '@/lib/marketplace/order-pricing';
 import { CUSTOMER_CANCELLABLE_STATUSES } from '@/lib/marketplace/order-status';
+import { isNibPushEnabled } from '@/lib/nib-push/config';
+import { PAYMENT_CANCEL_BLOCK_MINUTES, summarizeTelegramPayment } from './payment-summary';
 
 export const TELEGRAM_CHANNEL = 'TELEGRAM';
 export const TELEGRAM_ORDERABLE_SELLING_OPTIONS = ['DIRECT_ONLY', 'BOTH'];
@@ -163,6 +166,7 @@ export async function createTelegramOrder(
 
 const customerOrderSelect = {
   id: true,
+  borrowerId: true,
   status: true,
   paymentType: true,
   totalAmount: true,
@@ -171,7 +175,8 @@ const customerOrderSelect = {
   cancelledBy: true,
   createdAt: true,
   updatedAt: true,
-  merchant: { select: { id: true, name: true, contactPersonName: true, contactPersonPhone: true } },
+  // accountNumber only decides whether the order can be paid; it is not sent to the Mini App.
+  merchant: { select: { id: true, name: true, contactPersonName: true, contactPersonPhone: true, accountNumber: true } },
   orderItems: {
     select: {
       id: true,
@@ -184,26 +189,76 @@ const customerOrderSelect = {
       optionSelections: { select: { optionValue: { select: { label: true, group: { select: { name: true } } } } } },
     },
   },
+  // Never the attempt's sharedSecret.
+  directPendingPayments: {
+    select: {
+      status: true,
+      statusDesc: true,
+      amount: true,
+      createdAt: true,
+      completedAt: true,
+      ft: { select: { cbsReference: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  },
 } as const;
 
-export function listTelegramOrders(borrowerId: string, take = 50) {
-  return prisma.order.findMany({
+type CustomerOrderRow = Prisma.OrderGetPayload<{ select: typeof customerOrderSelect }>;
+
+/** Replaces the raw payment attempts with what the customer needs to know about paying. */
+function toCustomerOrder({ directPendingPayments, borrowerId, merchant, ...order }: CustomerOrderRow, enabled: boolean) {
+  const { accountNumber, ...merchantContact } = merchant;
+  return {
+    ...order,
+    merchant: merchantContact,
+    payment: summarizeTelegramPayment({ status: order.status, totalAmount: order.totalAmount, borrowerId }, directPendingPayments, {
+      enabled,
+      merchantCanReceive: Boolean(accountNumber?.trim()),
+    }),
+  };
+}
+
+export type TelegramCustomerOrder = ReturnType<typeof toCustomerOrder>;
+
+export async function listTelegramOrders(borrowerId: string, take = 50) {
+  const orders = await prisma.order.findMany({
     where: { borrowerId, channel: TELEGRAM_CHANNEL },
     select: customerOrderSelect,
     orderBy: { createdAt: 'desc' },
     take,
   });
+  const enabled = isNibPushEnabled();
+  return orders.map(order => toCustomerOrder(order, enabled));
 }
 
 /** The order, or null when it does not exist or is not this customer's Telegram order. */
-export function getTelegramOrder(borrowerId: string, orderId: string) {
-  return prisma.order.findFirst({
+export async function getTelegramOrder(borrowerId: string, orderId: string) {
+  const order = await prisma.order.findFirst({
     where: { id: orderId, borrowerId, channel: TELEGRAM_CHANNEL },
     select: customerOrderSelect,
   });
+  return order ? toCustomerOrder(order, isNibPushEnabled()) : null;
 }
 
 export async function cancelTelegramOrder(customer: { borrowerId: string; telegramUserId: string }, orderId: string, reason: string) {
+  // A prompt the customer may still approve, or a payment the bank is still
+  // confirming, would leave money on a cancelled order.
+  const paymentInProgress = await prisma.directPendingPayment.findFirst({
+    where: {
+      orderId,
+      borrowerId: customer.borrowerId,
+      OR: [
+        { status: 'PROCESSING' },
+        { status: { in: ['PENDING', 'AWAITING_PIN'] }, createdAt: { gt: new Date(Date.now() - PAYMENT_CANCEL_BLOCK_MINUTES * 60 * 1000) } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (paymentInProgress) {
+    throw new TelegramOrderError(409, 'A payment for this order is in progress. Please wait for it to finish before cancelling.');
+  }
+
   // Conditional update so a merchant status change in between cannot be overwritten.
   const { count } = await prisma.order.updateMany({
     where: {

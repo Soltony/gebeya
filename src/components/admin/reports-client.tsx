@@ -37,6 +37,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Calendar } from "../ui/calendar";
 import { DateRange } from "react-day-picker";
+import { StatusBadge } from "./direct-payments-panel";
+import { directPaymentMethodLabel, directPaymentStatusCopy, isResolvableDirectPaymentStatus } from "@/lib/direct-payment-status";
 
 const formatCurrency = (amount: number | null | undefined) => {
   if (amount === null || amount === undefined || isNaN(amount)) return "0.00";
@@ -1032,6 +1034,31 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
         addSanitizedRows(wsNB, nbData);
       }
 
+      // Direct (order) payments: super-app gateway and NIB USSD push
+      const allDirectPayments = await fetchAllPages(buildBaseUrl("/api/reports/direct-payments"));
+      if (allDirectPayments.length > 0) {
+        const formatDateTime = (value?: string | null) => (value ? format(new Date(value), "yyyy-MM-dd HH:mm") : "");
+        const directExport = allDirectPayments.map((r: any) => ({
+          Date: formatDateTime(r.createdAt),
+          "Payment Status": directPaymentStatusCopy(r.status, r.method).label,
+          "Status Detail": r.awaitingApproval ? "Marked paid; waiting for approval." : r.statusDesc || "",
+          Order: r.orderRef,
+          Channel: r.channel === "TELEGRAM" ? "Telegram" : "Super app",
+          "Order Status": r.orderStatus,
+          Customer: r.borrowerName,
+          Phone: r.borrowerPhone,
+          Merchant: r.merchantName,
+          "Merchant Account": r.merchantAccount,
+          Amount: r.amount,
+          Method: directPaymentMethodLabel(r.method),
+          "Bank Ref (FT)": r.cbsReference,
+          "Paid At": formatDateTime(r.completedAt),
+          "Transaction ID": r.transactionId,
+        }));
+        const wsDirect = wb.addWorksheet("Direct Payments");
+        addSanitizedRows(wsDirect, directExport);
+      }
+
       // If workbook has no worksheets (no data), inform the user
       if (wb.worksheets.length === 0) {
         toast({
@@ -1448,16 +1475,16 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
                 <Table>
                   <TableHeader className="sticky top-0 bg-card z-10">
                     <TableRow>
-                      <TableHead>Transaction ID</TableHead>
-                      <TableHead>Order ID</TableHead>
-                      <TableHead>Borrower</TableHead>
-                      <TableHead>Phone</TableHead>
-                      <TableHead>Merchant</TableHead>
-                      <TableHead>Merchant Account</TableHead>
-                      <TableHead className="text-right">Amount</TableHead>
-                      <TableHead>Payment Status</TableHead>
-                      <TableHead>Order Status</TableHead>
                       <TableHead>Date</TableHead>
+                      <TableHead>Payment Status</TableHead>
+                      <TableHead>Order</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Merchant</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead>Method</TableHead>
+                      <TableHead>Bank Ref (FT)</TableHead>
+                      <TableHead>Paid At</TableHead>
+                      <TableHead>Transaction ID</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1468,23 +1495,45 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
                         </TableCell>
                       </TableRow>
                     ) : directPaymentData.length > 0 ? (
-                      directPaymentData.map((row: any) => (
-                        <TableRow key={row.id}>
-                          <TableCell className="font-mono text-xs">{row.transactionId?.slice(-12)}</TableCell>
-                          <TableCell className="font-mono text-xs">{row.orderId?.slice(-8)}</TableCell>
-                          <TableCell>{row.borrowerName}</TableCell>
-                          <TableCell>{row.borrowerPhone}</TableCell>
-                          <TableCell>{row.merchantName}</TableCell>
-                          <TableCell className="font-mono">{row.merchantAccount}</TableCell>
-                          <TableCell className="text-right font-mono">{formatCurrency(row.amount)}</TableCell>
-                          <TableCell>
-                            <Badge variant={row.status === "COMPLETED" ? "default" : row.status === "FAILED" ? "destructive" : "secondary"}
-                              className={cn(row.status === "COMPLETED" && "bg-green-600 text-white")}>{row.status}</Badge>
-                          </TableCell>
-                          <TableCell>{row.orderStatus}</TableCell>
-                          <TableCell>{row.createdAt ? format(new Date(row.createdAt), "yyyy-MM-dd HH:mm") : ""}</TableCell>
-                        </TableRow>
-                      ))
+                      directPaymentData.map((row: any) => {
+                        const statusCopy = directPaymentStatusCopy(row.status, row.method);
+                        const stuck = !row.awaitingApproval && isResolvableDirectPaymentStatus(row.status);
+                        return (
+                          <TableRow key={row.id}>
+                            <TableCell className="whitespace-nowrap">{row.createdAt ? format(new Date(row.createdAt), "yyyy-MM-dd HH:mm") : ""}</TableCell>
+                            <TableCell className="max-w-[260px]">
+                              <StatusBadge status={row.status} method={row.method} />
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {row.awaitingApproval ? "Marked paid; waiting for approval." : row.statusDesc || statusCopy.hint}
+                              </div>
+                              {stuck && (
+                                <a href="/admin/pending-payments?type=orders" className="text-xs text-primary underline">
+                                  Settle in Pending Payments
+                                </a>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <div className="font-mono">{row.orderRef}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {row.channel === "TELEGRAM" ? "Telegram" : "Super app"} · {row.orderStatus}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div>{row.borrowerName}</div>
+                              <div className="font-mono text-xs text-muted-foreground">{row.borrowerPhone}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div>{row.merchantName}</div>
+                              <div className="font-mono text-xs text-muted-foreground">{row.merchantAccount}</div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono">{formatCurrency(row.amount)}</TableCell>
+                            <TableCell>{directPaymentMethodLabel(row.method)}</TableCell>
+                            <TableCell className="font-mono text-xs">{row.cbsReference || "—"}</TableCell>
+                            <TableCell className="whitespace-nowrap">{row.completedAt ? format(new Date(row.completedAt), "yyyy-MM-dd HH:mm") : "—"}</TableCell>
+                            <TableCell className="font-mono text-xs">{row.transactionId}</TableCell>
+                          </TableRow>
+                        );
+                      })
                     ) : (
                       <TableRow>
                         <TableCell colSpan={10} className="h-24 text-center">No direct payment records found.</TableCell>

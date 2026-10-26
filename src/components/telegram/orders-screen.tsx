@@ -77,6 +77,7 @@ export function OrdersScreen() {
                 </p>
                 <p className="text-xs tg-hint">
                   {order.merchant?.name} · {new Date(order.createdAt).toLocaleDateString()} · {formatEtb(order.totalAmount)}
+                  {order.payment.state === 'PAID' ? ' · Paid' : ''}
                 </p>
               </div>
               <ChevronRight className="h-4 w-4 shrink-0 tg-hint" />

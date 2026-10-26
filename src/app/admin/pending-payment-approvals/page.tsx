@@ -21,7 +21,12 @@ export type PendingPaymentApproval = PendingChange & {
   >;
   entityName: string;
   providerName?: string;
+  /** What approving does, e.g. "Mark Order Payment Paid". */
+  requestLabel: string;
 };
+
+// Loan repayments (BNPL) and order payments (USSD push / super-app gateway).
+const RESOLVE_ENTITY_TYPES = ["PendingPaymentResolve", "DirectPaymentResolve"];
 
 export type PaginatedPendingPaymentApprovals = {
   data: PendingPaymentApproval[];
@@ -40,13 +45,13 @@ async function getPendingPaymentApprovals(
     prisma.pendingChange.count({
       where: {
         status: "PENDING",
-        entityType: "PendingPaymentResolve",
+        entityType: { in: RESOLVE_ENTITY_TYPES },
       },
     }),
     prisma.pendingChange.findMany({
       where: {
         status: "PENDING",
-        entityType: "PendingPaymentResolve",
+        entityType: { in: RESOLVE_ENTITY_TYPES },
       },
       include: {
         createdBy: {
@@ -71,11 +76,24 @@ async function getPendingPaymentApprovals(
   const detailed = changes.map((change) => {
     let entityName = change.entityId || "N/A";
     let providerName: string | undefined;
+    const isOrderPayment = change.entityType === "DirectPaymentResolve";
+    const requestLabel = isOrderPayment ? "Mark Order Payment Paid" : "Mark Payment Successful";
 
     try {
       const data = JSON.parse(change.payload);
       const created = data?.created;
-      if (created) {
+      if (created && isOrderPayment) {
+        entityName =
+          [
+            created.orderRef ? `Order ${created.orderRef}` : null,
+            created.borrowerId ? `Customer ${created.borrowerId}` : null,
+            created.merchantName ? String(created.merchantName) : null,
+            created.transactionId ? `Ref ${created.transactionId}` : null,
+          ]
+            .filter(Boolean)
+            .join(" • ") || entityName;
+        providerName = created.method === "USSD_PUSH" ? "USSD push" : "Super app";
+      } else if (created) {
         const borrowerId = created.borrowerId
           ? String(created.borrowerId)
           : null;
@@ -105,6 +123,7 @@ async function getPendingPaymentApprovals(
       ...change,
       entityName,
       providerName,
+      requestLabel,
     } as PendingPaymentApproval;
   });
 

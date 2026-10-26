@@ -104,7 +104,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
 
     const ok = await confirm(
       `Order ${quantity} × ${item.name} for ${formatEtb(quote.totalAmount)}?\n\n` +
-        'No payment is taken now. The merchant will contact you about delivery.',
+        'No payment is taken now. The merchant will contact you about delivery, and you pay when it arrives.',
     );
     if (!ok) return;
 
@@ -274,7 +274,7 @@ export function ItemScreen({ itemId }: { itemId: string }) {
         {quoteError && <p className="pt-1 text-xs tg-destructive">{quoteError}</p>}
         <p className="pt-1 text-xs tg-hint">
           {item.requiresMerchantConfirmation ? 'The merchant confirms availability before delivery. ' : ''}
-          No payment is taken when you order.
+          No payment is taken when you order; you pay when it arrives.
         </p>
       </div>
 

@@ -16,7 +16,7 @@ async function getPendingChanges(): Promise<PendingChangeWithDetails[]> {
     where: {
       status: "PENDING",
       // Exclude reversal-related entity types - they are handled on the reversal approvals page
-      entityType: { notIn: ["DisbursementReversal", "DisbursementCancel", "LoanReversal", "LoanCancel", "Merchant", "MerchantItem", "MerchantDiscountRule", "MerchantLocation", "PendingPaymentResolve"] },
+      entityType: { notIn: ["DisbursementReversal", "DisbursementCancel", "LoanReversal", "LoanCancel", "Merchant", "MerchantItem", "MerchantDiscountRule", "MerchantLocation", "PendingPaymentResolve", "DirectPaymentResolve"] },
     },
     include: {
       // Only select non-sensitive fields for the creating user to avoid returning password hashes

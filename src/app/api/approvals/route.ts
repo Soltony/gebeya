@@ -1,7 +1,9 @@
 "use server";
 
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { FtConflictError, resolvePushPaymentManually } from "@/lib/nib-push/push-payments";
+import { notifyTelegramPaymentUpdate } from "@/lib/telegram/notifications";
 import { getUserFromSession } from "@/lib/user";
 import { z, ZodError } from "zod";
 import { validationErrorResponse, handleApiError } from "@/lib/error-utils";
@@ -1969,6 +1971,52 @@ async function applyChange(
           source: "MANUAL",
           actorId: actorId || undefined,
         });
+      }
+      break;
+
+    case "DirectPaymentResolve":
+      if (changeType !== "CREATE") {
+        throw new Error("Invalid changeType for DirectPaymentResolve");
+      }
+
+      {
+        const actorId = context?.actorId || "N/A";
+        const paymentId = data?.created?.directPendingPaymentId || entityId;
+        const ftReference = data?.created?.ftReference ? String(data.created.ftReference) : null;
+        if (!paymentId) throw new Error("Missing directPendingPaymentId");
+        if (!ftReference) throw new Error("Missing FT reference number");
+
+        let transition;
+        try {
+          // Same effects as the bank confirming it: COMPLETED, FT recorded,
+          // order DELIVERED. Null when the bank confirmed it while the request
+          // waited, in which case approving changes nothing.
+          transition = await resolvePushPaymentManually(paymentId, ftReference, actorId);
+        } catch (error) {
+          if (error instanceof FtConflictError) throw new Error(error.message);
+          throw error;
+        }
+
+        await createAuditLog({
+          actorId,
+          action: "DIRECT_PAYMENT_RESOLVED",
+          entity: "ORDER",
+          entityId: data?.created?.orderId,
+          details: {
+            directPendingPaymentId: paymentId,
+            transactionId: data?.created?.transactionId,
+            ftReference,
+            amount: data?.created?.amount,
+            alreadyConfirmed: !transition,
+          },
+          ipAddress: context?.ipAddress || "N/A",
+          userAgent: context?.userAgent || "N/A",
+        });
+
+        if (transition) {
+          const settled = transition;
+          after(() => notifyTelegramPaymentUpdate(settled));
+        }
       }
       break;
 

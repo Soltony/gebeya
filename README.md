@@ -133,7 +133,7 @@ EXTERNAL_API_PASSWORD="123456"
 
 ## 🤖 Telegram Bot & Mini App
 
-The marketplace is also available as a Telegram Mini App at `/tg`, with a bot that links the customer's phone number and sends order updates. The Telegram shop lists only items whose selling option is **Direct Payment Only** (`DIRECT_ONLY`) or **Both (BNPL + Direct)** (`BOTH`); customers place **direct** (non-credit) orders for them, track them and cancel them. **BNPL Only** items are not shown in Telegram at all — they stay in the Nib app — and `BOTH` items can only be paid directly in Telegram. Payment is not collected in Telegram yet; Telegram orders are tagged with a **Telegram** badge on the admin Orders page.
+The marketplace is also available as a Telegram Mini App at `/tg`, with a bot that links the customer's phone number and sends order updates. The Telegram shop lists only items whose selling option is **Direct Payment Only** (`DIRECT_ONLY`) or **Both (BNPL + Direct)** (`BOTH`); customers place **direct** (non-credit) orders for them, track them and cancel them. **BNPL Only** items are not shown in Telegram at all — they stay in the Nib app — and `BOTH` items can only be paid directly in Telegram. Nothing is charged when an order is placed; the customer pays on delivery with a **NIB USSD push** (see [NIB USSD push payments](#-nib-ussd-push-payments) below). Telegram orders are tagged with a **Telegram** badge on the admin Orders page.
 
 ### 1. Create the bot (BotFather)
 
@@ -188,5 +188,106 @@ Re-run after changing any `TELEGRAM_*` value.
 
 * **Identity:** the Mini App sends Telegram's signed `initData` on every `/api/tg/*` request (`Authorization: tma …`); the server verifies it with the bot token. The customer's phone is linked only from a contact they share with the bot for their own account, normalized to the `251XXXXXXXXX` borrower id.
 * **Pricing:** `src/lib/marketplace/order-pricing.ts` is shared with the super-app order route, so both channels charge the same for the same basket.
-* **Notifications:** when a merchant changes a Telegram order's status in the admin panel, the customer gets a bot message with a button back to the order.
+* **Notifications:** when a merchant changes a Telegram order's status in the admin panel, the customer gets a bot message with a button back to the order. Payment results (received, not completed, being confirmed) are sent the same way.
 * **Telegram SDK:** `public/telegram-web-app.js` is a copy of Telegram's Mini App script, served from our own domain because `telegram.org` is not reliably reachable from customers' networks. It provides Telegram's back arrow, bottom button and theme. Refresh it occasionally with `curl -o public/telegram-web-app.js https://telegram.org/js/telegram-web-app.js`. If it fails to load, the app falls back to in-page Back and Order buttons.
+
+---
+
+## 📲 NIB USSD Push Payments
+
+Telegram customers pay for direct orders with a NIB push payment: we send the amount and the customer's phone to the bank's push service, the bank sends a USSD PIN prompt to that phone, the customer approves it with their PIN, and the bank posts the result back to us. The customer never shares an account number. The integration follows NIB's *Push Payment Integration Guide* v1.0 (May 2026); section numbers below (§) refer to it.
+
+### The flow
+
+1. The order reaches **On the way** (`ON_DELIVERY`), as for direct payments in the super app. The Mini App then shows **Pay <amount>** on the order screen.
+2. `POST /api/tg/orders/:id/pay` sends the encrypted transfer request (§5.3). The prompt goes to the phone linked to the Telegram account, the amount is the order total, and the money is credited straight to the merchant's NIB account (the merchant's **Account Number**, sent as `creditAccount`: dynamic routing, §10.3). An order from a merchant with no account number on file shows no Pay button. Super-app direct payments still go to the provider collection account. The bank's 200 only means the prompt was sent; the attempt waits in `AWAITING_PIN`. A number the bank doesn't know gets 400 "User not found", which the customer sees as "isn't registered with NIB".
+3. The bank posts the encrypted result to our callback URL, `POST /api/nib-push/callback` (§7). On success the order becomes **Delivered**, the bank's FT number is recorded, and the customer gets a bot message. The URL can't be sent with the request (the transfer schema rejects a `resultUrl` field), so **the bank must have it registered on our profile** (§10.1); until it does, no callback comes.
+4. While the customer waits, the Mini App polls `GET /api/tg/orders/:id/pay` every 3 s, and the server asks the bank's status endpoint (§5.5) at most every 10 s per attempt in case the callback is late. The customer can resend the prompt after 60 s; open attempts are checked with the bank first (§8.2), each resend is a new attempt with a new reference, and a late callback on an older one is still matched.
+
+Every attempt is a `DirectPendingPayment` row with `method = USSD_PUSH`, so it appears in **Reports → Direct Payment** (and its Excel export) next to super-app payments: customer name and phone, the order reference the customer sees, channel, a plain-language status with the bank's reason, FT and paid time.
+
+**When the bank never reports back.** If the customer was debited but neither a callback nor the status endpoint confirms it, an operator settles it from the bank statement: **Pending Payments → Order payments**, find the payment, **Mark Paid** with the FT. A second user approves it under **Pending Payment Approvals**; the payment is then recorded exactly as a bank confirmation would record it (FT stored, order delivered, customer messaged). An FT can settle only one payment.
+
+| Status | Meaning |
+| --- | --- |
+| `PENDING` | Created, and the bank hasn't confirmed it: no answer yet, no answer at all, a 409 or a 5xx. The request may still have been taken, so only the status endpoint closes it (a 404 there fails it). |
+| `AWAITING_PIN` | Prompt sent; waiting for the customer. |
+| `COMPLETED` | Paid. The FT is in `DirectPaymentFt`, where one FT can settle only one payment. |
+| `FAILED` | Declined (wrong PIN, no balance) or rejected by the bank. The customer can try again. |
+| `PROCESSING` | The bank reported a failure that may still have moved money: `statusCode 1` with an FT or "server busy", success after a recorded failure, a different amount, or an FT already used elsewhere. The customer is told not to pay again; an operator confirms it against the bank statement. |
+
+Audit log actions: `DIRECT_PAYMENT_PUSH_REQUEST`, `DIRECT_PAYMENT_SUCCESS`, `DIRECT_PAYMENT_FAILED`, `DIRECT_PAYMENT_NEEDS_REVIEW` and `DIRECT_PAYMENT_NEEDS_REFUND` (money for an order that was already paid or was cancelled while the customer entered their PIN).
+
+### Configure the environment
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `NIB_PUSH_BASE_URL` | yes | Bank base URL for UAT or production. Unset = paying in Telegram disabled. |
+| `NIB_PUSH_USERNAME` / `NIB_PUSH_PASSWORD` | yes | HTTP Basic credentials the bank issued (§2.1), per environment. |
+| `NIB_PUSH_COMPANY` | yes | Our company identifier code (`company`, §10.3). We choose it and register it with the bank: globally unique, short (under 6 characters), ALL CAPS, e.g. `NIBBANK`. |
+| `NIB_PUSH_CALLBACK_USERNAME` / `NIB_PUSH_CALLBACK_PASSWORD` | yes | Basic credentials **we** choose and give the bank; it sends them on every callback (§10.1). A callback without them is accepted only if it is encrypted with the bank's own key (so it can only come from the bank); anything else gets 401. |
+| `NIB_PUSH_SERVER_PRIVATE_KEY` | yes | Our long-term secp256k1 private key (64 hex characters or base64). The bank encrypts callbacks to its public half (§10.2). |
+| `NIB_PUSH_CHECKSUM` | no | What the outbound `cksum` covers: `bytes` (default) or `hex`. See below. |
+| `NIB_PUSH_BANK_PUBLIC_KEY` | no | The bank's public key (base64), used only when `get-pub-key` doesn't answer within 8 s. Copy it from a successful `get-pub-key` call. |
+| `NIB_PUSH_RECONCILE_INTERVAL_MINUTES` | no | How often the reconciliation worker runs, default 5. |
+
+Generate the server key once per environment and keep it out of source control:
+
+```bash
+node -e "const e=require('crypto').createECDH('secp256k1');e.generateKeys();console.log('NIB_PUSH_SERVER_PRIVATE_KEY=' + e.getPrivateKey('hex'));console.log('public key for NIB: ' + e.getPublicKey('base64'))"
+```
+
+**Checksum.** §4.2 says `cksum` is SHA-256 over the *hex text* of the ciphertext, and that hashing raw bytes gets a 401. The requests in the bank's Postman collection, including one it answered with 200, hash the *raw bytes*. `bytes` is the default because it is the one seen working; if transfers come back 401 "Checksum mismatch", set `NIB_PUSH_CHECKSUM=hex`. Inbound checksums are accepted either way.
+
+### Give the bank (provisioning, §10)
+
+* **Company identifier code:** the value of `NIB_PUSH_COMPANY` (§10.3).
+* **Callback URL (`resultUrl`):** `https://<host>/api/nib-push/callback`.
+* **Callback credentials:** `NIB_PUSH_CALLBACK_USERNAME` and `NIB_PUSH_CALLBACK_PASSWORD`.
+* **Our public key**, either option: **B (static)**, the base64 uncompressed key derived from `NIB_PUSH_SERVER_PRIVATE_KEY` (printed by the command above); or **A (URL)**, `GET https://<host>/api/nib-push/public-key`, protected by the same callback credentials, which returns `{ "publicKey": "…" }`.
+* **Credit account routing:** tell the bank we route dynamically: every request carries the merchant's account as `creditAccount` (§10.3). Ask whether they validate credit accounts against a list; if so, they need each merchant's account.
+
+The guide also requires HTTPS and a site-to-site IPSec VPN (§3).
+
+**Where UAT differs from the guide** (handled in `src/lib/nib-push/push-payments.ts`):
+
+* The inner transfer payload is checked against a strict schema: only the seven §5.3.1 fields are allowed, and anything else (e.g. `resultUrl`) is refused with "object instance has properties which are not allowed by the schema".
+* Wrong or missing credentials come back as HTTP 200 with `{ "statusCode": 401, "details": "Invalid Credentials" }` in the body, so the body's `statusCode` decides.
+* The status endpoint (§5.5) answers **every** reference, including paid ones, with 401 and an empty, unencrypted status body, so it cannot confirm anything on UAT; only the callback (or an operator) can. Ask NIB to fix it or to tell us which credentials it needs. Only a real 404 is read as "no record".
+
+### Apply the database migration
+
+```bash
+npx prisma migrate deploy
+```
+
+Adds `method`, `customerPhone`, `sharedSecret`, `clientPrivateKey`, `statusDesc`, `payerAccount`, `statusCheckedAt` and `completedAt` to `DirectPendingPayment`, and the `DirectPaymentFt` table.
+
+### Run the reconciliation worker
+
+Attempts whose callback never came (30 minutes to 24 hours old) are settled from the bank's status endpoint: `PAID` completes them, `NOT_PAID` fails them, `PENDING` leaves them.
+
+```bash
+npm run run:worker -- nib-push-reconcile-service   # long-running, every NIB_PUSH_RECONCILE_INTERVAL_MINUTES
+npm run run:worker -- nib-push-reconcile           # one sweep
+```
+
+Rebuild `dist/worker.cjs` with `npm run build:worker` to include these tasks.
+
+### Security
+
+Every payload in both directions is AES-256-GCM encrypted with a key agreed by ECDH on secp256k1 (`src/lib/nib-push/crypto.ts`, guide §4 and §6). Each request uses a fresh one-time key pair (§4.3); its private key and the agreed secret are stored on the attempt (`DirectPendingPayment.clientPrivateKey` and `sharedSecret`) to open the bank's status replies, and are never logged or returned by an API. Callbacks carry no reference in clear and are opened with our server key and the `pubkey` in the envelope (§7.3). If that fails, the last day's attempts' keys are tried in case the bank used an attempt's one-time key; a GCM tag that verifies identifies the attempt. Opening a callback does not by itself prove the bank sent it, since anyone can encrypt to our public key, so it must also carry our Basic credentials, or open with a key only the bank holds: the attempt's agreed secret, or a derivation with a known bank public key (cached from get-pub-key, or `NIB_PUSH_BANK_PUBLIC_KEY`). The checksum is checked before decrypting and the GCM tag while decrypting; rejected callbacks are logged as `SECURITY`. Phone and account numbers are masked in logs.
+
+### Try it locally
+
+`scripts/mock-nib-push.cjs` stands in for the bank as the guide describes it: it serves get-pub-key, transfer and status with the same encryption, answers 409 for a repeated reference and 400 "User not found" for phones ending in `0000`, and posts the callback a few seconds after each transfer.
+
+```bash
+MOCK_PARTNER_PUBLIC_KEY=<our public key> node scripts/mock-nib-push.cjs   # MOCK_OUTCOME=success|decline|busy|silent-paid|silent
+```
+
+Run the app with `NIB_PUSH_BASE_URL=http://localhost:4010`, `NIB_PUSH_USERNAME=mock`, `NIB_PUSH_PASSWORD=mock`, `NIB_PUSH_COMPANY=GEBEYA`, `NIB_PUSH_CALLBACK_USERNAME=nib`, `NIB_PUSH_CALLBACK_PASSWORD=mock-callback` and the server key whose public half you gave the mock, then pay for an order that is **On the way** in the Mini App.
+
+### Not built yet
+
+Refunds (§5.6, §5.7) are not wired in. Payments flagged `DIRECT_PAYMENT_NEEDS_REFUND` are refunded by operations for now.

@@ -159,8 +159,8 @@ export function PendingPaymentApprovalsClient({
             <CardTitle>Payment Resolve Requests</CardTitle>
             <CardDescription>
               Review and approve or reject pending payment resolve requests.
-              Approving will record the repayment and mark the pending payment
-              as successful.
+              Approving records the payment: a loan repayment against the loan,
+              or an order payment, which also marks the order delivered.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -185,7 +185,7 @@ export function PendingPaymentApprovalsClient({
                     return (
                       <TableRow key={change.id}>
                         <TableCell className="font-medium">
-                          <div>Mark Payment Successful</div>
+                          <div>{change.requestLabel}</div>
                           <div className="text-sm text-muted-foreground">
                             {change.entityName}
                           </div>

@@ -1,4 +1,7 @@
 /** Response shapes of /api/tg/*. */
+import type { TelegramOrderPayment } from '@/lib/telegram/payment-summary';
+
+export type { TelegramOrderPayment };
 
 export type CatalogItem = {
   id: string;
@@ -62,4 +65,5 @@ export type CustomerOrder = {
     variant: { name: string } | null;
     optionSelections: Array<{ optionValue: { label: string; group: { name: string } } }>;
   }>;
+  payment: TelegramOrderPayment;
 };

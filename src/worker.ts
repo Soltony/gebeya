@@ -25,6 +25,38 @@ const CBS_NPL_RETRY_INTERVAL_MS =
   (Number(process.env.NPL_RETRY_INTERVAL_MINUTES) > 0
     ? Math.floor(Number(process.env.NPL_RETRY_INTERVAL_MINUTES))
     : 5) * 60 * 1000; // 5 minutes
+const NIB_PUSH_RECONCILE_INTERVAL_MS =
+  (Number(process.env.NIB_PUSH_RECONCILE_INTERVAL_MINUTES) > 0
+    ? Math.floor(Number(process.env.NIB_PUSH_RECONCILE_INTERVAL_MINUTES))
+    : 5) * 60 * 1000; // 5 minutes
+
+// Settles NIB USSD push payments whose callback never arrived (30 min to 24 h
+// old) from the bank's status endpoint, and tells Telegram customers.
+async function runNibPushReconcileOnce() {
+  const { reconcilePushPaymentsOnce } = await import('./lib/nib-push/push-payments');
+  const { notifyTelegramPaymentUpdate } = await import('./lib/telegram/notifications');
+  const { scanned, transitions } = await reconcilePushPaymentsOnce();
+  for (const transition of transitions) {
+    await notifyTelegramPaymentUpdate(transition);
+  }
+  if (scanned > 0) {
+    const counts = transitions.reduce<Record<string, number>>((acc, t) => ({ ...acc, [t.to]: (acc[t.to] ?? 0) + 1 }), {});
+    logger.info(`NIB push reconciliation finished scanned=${scanned} changed=${transitions.length} ${JSON.stringify(counts)}`);
+  }
+}
+
+async function runNibPushReconcileServiceLoop() {
+  logger.info('NIB push reconciliation service started');
+  while (true) {
+    try {
+      await runNibPushReconcileOnce();
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during NIB push reconciliation:`, error);
+      logger.error(`Error during NIB push reconciliation: ${String(error)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, NIB_PUSH_RECONCILE_INTERVAL_MS));
+  }
+}
 
 async function runProviderDistributionServiceLoop() {
   while (true) {
@@ -282,6 +314,15 @@ async function main() {
       case 'telegram-bot':
         logger.info('Starting telegram-bot polling loop');
         await runTelegramBotPollingLoop();
+        break;
+      case 'nib-push-reconcile':
+        logger.info('Running one-off nib-push-reconcile');
+        await runNibPushReconcileOnce();
+        process.exit(0);
+        break;
+      case 'nib-push-reconcile-service':
+        logger.info('Starting nib-push-reconcile-service long-running loop');
+        await runNibPushReconcileServiceLoop();
         break;
       default:
         console.error(`Error: Unknown task "${task}".`);

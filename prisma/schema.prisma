@@ -1009,23 +1009,54 @@ model CombinationInventoryLevel {
 // (Separate from BNPL loan repayment tables)
 // --------------------------------------
 
-// Tracks pending direct payments for orders (not loan repayments)
+// Tracks pending direct payments for orders (not loan repayments). One row per
+// payment attempt: a resent USSD push is a new row with a new transactionId.
 model DirectPendingPayment {
-  id            String   @id @default(cuid())
-  transactionId String   @unique
-  orderId       String
-  order         Order    @relation(fields: [orderId], references: [id], onUpdate: NoAction, onDelete: NoAction)
-  borrowerId    String
-  borrower      Borrower @relation(fields: [borrowerId], references: [id], onUpdate: NoAction, onDelete: NoAction)
-  merchantId    String
-  merchant      Merchant @relation(fields: [merchantId], references: [id], onUpdate: NoAction, onDelete: NoAction)
-  amount        Float
-  status        String   @default("PENDING") // PENDING, COMPLETED, FAILED
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id              String           @id @default(cuid())
+  transactionId   String           @unique
+  orderId         String
+  order           Order            @relation(fields: [orderId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  borrowerId      String
+  borrower        Borrower         @relation(fields: [borrowerId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  merchantId      String
+  merchant        Merchant         @relation(fields: [merchantId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  amount          Float
+  // PENDING, COMPLETED, FAILED; USSD_PUSH also uses AWAITING_PIN (prompt sent)
+  // and PROCESSING (bank reported a failure but money may have moved).
+  status          String           @default("PENDING")
+  // GATEWAY (super-app payment token) or USSD_PUSH (NIB push to the customer's phone).
+  method          String           @default("GATEWAY")
+  // USSD_PUSH only. Phone that received the PIN prompt.
+  customerPhone   String?
+  // USSD_PUSH only. The attempt's one-time ECDH private key and the secret it
+  // agreed with the bank (both base64); they decrypt the bank's replies for
+  // this attempt. Never log them or return them from an API.
+  sharedSecret     String?
+  clientPrivateKey String?
+  // Bank's latest reason text, e.g. "Insufficient balance" or "server busy".
+  statusDesc      String?          @db.NVarChar(500)
+  payerAccount    String?
+  // Last time the bank's status endpoint was asked about this attempt.
+  statusCheckedAt DateTime?
+  completedAt     DateTime?
+  ft              DirectPaymentFt?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@index([orderId])
   @@index([borrowerId])
+  @@index([method, status, createdAt])
+}
+
+/// Core-banking FT numbers recorded against direct payments. The primary key is
+/// what lets one FT settle only one payment; it lives here because SQL Server
+/// allows a single NULL in a unique index, so a nullable column on
+/// DirectPendingPayment could not carry it.
+model DirectPaymentFt {
+  cbsReference           String               @id
+  directPendingPaymentId String               @unique
+  directPendingPayment   DirectPendingPayment @relation(fields: [directPendingPaymentId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  createdAt              DateTime             @default(now())
 }
 
 // Logs upstream payment gateway callbacks for direct payments

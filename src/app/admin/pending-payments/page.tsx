@@ -52,6 +52,8 @@ import {
   PENDING_PAYMENT_STATUS,
   isResolvablePendingPaymentStatus,
 } from "@/lib/pending-payment-status";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DirectPaymentsPanel } from "@/components/admin/direct-payments-panel";
 
 type PendingPaymentRow = {
   id: string;
@@ -120,6 +122,12 @@ export default function PendingPaymentsPage() {
   const [ftReference, setFtReference] = useState("");
   const [paymentDate, setPaymentDate] = useState<Date | undefined>(new Date());
   const [isResolving, setIsResolving] = useState(false);
+  const [kind, setKind] = useState<"loans" | "orders">("loans");
+
+  // ?type=orders opens the order payments view (linked from the Direct Payment report).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("type") === "orders") setKind("orders");
+  }, []);
 
   // Debounce search input
   useEffect(() => {
@@ -240,10 +248,24 @@ export default function PendingPaymentsPage() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Pending Payments</h2>
           <p className="text-muted-foreground">
-            Payment intents the gateway never confirmed, which can be marked as
-            successful by providing the FT reference number.
+            Payments the gateway or the bank never confirmed, which can be
+            marked as successful by providing the FT reference number.
           </p>
         </div>
+      </div>
+
+      <Tabs value={kind} onValueChange={(value) => setKind(value as "loans" | "orders")}>
+        <TabsList>
+          <TabsTrigger value="loans">Loan repayments</TabsTrigger>
+          <TabsTrigger value="orders">Order payments</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {kind === "orders" ? (
+        <DirectPaymentsPanel />
+      ) : (
+      <>
+      <div className="flex items-center justify-end">
         <div className="flex items-end gap-2">
           <div className="flex flex-col gap-1">
             <span className="text-xs text-muted-foreground">Status</span>
@@ -508,6 +530,8 @@ export default function PendingPaymentsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </>
+      )}
     </div>
   );
 }
