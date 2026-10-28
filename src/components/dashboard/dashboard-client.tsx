@@ -37,6 +37,8 @@ import {
   DialogClose,
 } from "../ui/dialog";
 import AccountSelector from "@/components/loan/account-selector";
+import { ReferralCodeCard } from "@/components/loan/referral-code-card";
+import { EarnLink } from "@/components/earn/earn-link";
 import { ScrollArea } from "../ui/scroll-area";
 import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
@@ -506,6 +508,7 @@ export function DashboardClient({
         <main className="flex-1">
           <div className="container py-2 md:py-4">
             <div className="flex flex-col">
+              <ReferralCodeCard className="mb-2" />
               <div className="py-2">
                 <div className="flex justify-center space-x-4 overflow-x-auto">
                   {providers.map((provider) => (
@@ -682,7 +685,8 @@ export function DashboardClient({
                 </Card>
               )}
 
-              <div className="flex justify-end mt-4 gap-3">
+              <div className="flex flex-wrap justify-end mt-4 gap-3">
+                <EarnLink className="gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors bg-shop/15 text-shop-deep" />
                 <Link
                   href={`/loan?borrowerId=${searchParams.get('borrowerId') || ''}&view=shop`}
                   className="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors bg-primary/10 text-primary"

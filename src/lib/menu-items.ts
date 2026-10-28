@@ -23,6 +23,7 @@ import {
   ChevronRight,
   HandCoins,
   ClipboardCheck,
+  Handshake,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -166,6 +167,12 @@ export const allMenuItems: MenuItem[] = [
     path: '/admin/merchants-approvals',
     label: 'Merchants Approvals',
     icon: CheckSquare,
+    roles: ['Super Admin', 'Loan Manager'],
+  },
+  {
+    path: '/admin/affiliates',
+    label: 'Affiliates',
+    icon: Handshake,
     roles: ['Super Admin', 'Loan Manager'],
   },
    {

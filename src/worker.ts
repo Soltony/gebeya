@@ -29,6 +29,10 @@ const NIB_PUSH_RECONCILE_INTERVAL_MS =
   (Number(process.env.NIB_PUSH_RECONCILE_INTERVAL_MINUTES) > 0
     ? Math.floor(Number(process.env.NIB_PUSH_RECONCILE_INTERVAL_MINUTES))
     : 5) * 60 * 1000; // 5 minutes
+const AFFILIATE_INTERVAL_MS =
+  (Number(process.env.AFFILIATE_JOB_INTERVAL_MINUTES) > 0
+    ? Math.floor(Number(process.env.AFFILIATE_JOB_INTERVAL_MINUTES))
+    : 24 * 60) * 60 * 1000; // 24 hours
 
 // Settles NIB USSD push payments whose callback never arrived (30 min to 24 h
 // old) from the bank's status endpoint, and tells Telegram customers.
@@ -216,6 +220,25 @@ async function runTelegramBotPollingLoop() {
   }
 }
 
+async function runAffiliateServiceLoop() {
+  logger.info('Affiliate commission service started');
+  while (true) {
+    try {
+      const { runAffiliateCommissionsOnce } = await import('./lib/affiliate/commissions');
+      await runAffiliateCommissionsOnce();
+      // Safety net for approved payouts that were not sent right after approval
+      // (e.g. disbursements were switched off). Failed payouts are never retried here.
+      const { sendApprovedPayouts } = await import('./lib/affiliate/payouts');
+      await sendApprovedPayouts();
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error during affiliate commission cycle:`, error);
+      logger.error(`Error during affiliate commission cycle: ${String(error)}`);
+    }
+    logger.info(`Affiliate commission service sleeping for ${Math.round(AFFILIATE_INTERVAL_MS / (60 * 1000))}m`);
+    await new Promise((resolve) => setTimeout(resolve, AFFILIATE_INTERVAL_MS));
+  }
+}
+
 
 async function main() {
   const task = process.argv[2];
@@ -323,6 +346,28 @@ async function main() {
       case 'nib-push-reconcile-service':
         logger.info('Starting nib-push-reconcile-service long-running loop');
         await runNibPushReconcileServiceLoop();
+        break;
+      case 'affiliate-commissions':
+        logger.info('Running one-off affiliate-commissions');
+        {
+          const { runAffiliateCommissionsOnce } = await import('./lib/affiliate/commissions');
+          const result = await runAffiliateCommissionsOnce();
+          console.log('Affiliate commissions:', result);
+        }
+        process.exit(0);
+        break;
+      case 'affiliate-payouts':
+        logger.info('Running one-off affiliate-payouts');
+        {
+          const { sendApprovedPayouts } = await import('./lib/affiliate/payouts');
+          const result = await sendApprovedPayouts();
+          console.log('Affiliate payouts:', result);
+        }
+        process.exit(0);
+        break;
+      case 'affiliate-service':
+        logger.info('Starting affiliate-service long-running loop');
+        await runAffiliateServiceLoop();
         break;
       default:
         console.error(`Error: Unknown task "${task}".`);

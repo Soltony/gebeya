@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Search, ShoppingCart, PlayCircle, Package, Tag, X, ChevronRight, Store, CreditCard } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
+import { ReferralCodeCard } from '@/components/loan/referral-code-card';
+import { EarnLink } from '@/components/earn/earn-link';
 
 const MAX_VISIBLE_MERCHANTS = 8;
 const NEW_ITEM_DAYS = 7;
@@ -205,6 +207,8 @@ export function ShopBrowse({ hasActiveLoan = false }: { hasActiveLoan?: boolean 
                 </button>
               )}
 
+              <EarnLink className="mr-1.5 text-white/90 hover:text-white font-medium text-sm transition-colors" dotClassName="ring-shop" />
+
               <Link
                 href={`/bnpl/orders?borrowerId=${borrowerId}`}
                 className="relative inline-flex items-center gap-1.5 text-white/90 hover:text-white font-medium text-sm transition-colors"
@@ -264,6 +268,8 @@ export function ShopBrowse({ hasActiveLoan = false }: { hasActiveLoan?: boolean 
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
+        <ReferralCodeCard className="mb-5 sm:mb-8" />
+
         {/* Merchant Section */}
         {merchants.length > 0 && (
           <div className="mb-6 sm:mb-8">

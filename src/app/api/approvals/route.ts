@@ -20,6 +20,11 @@ import {
   isResolvablePendingPaymentStatus,
   RESOLVABLE_PENDING_PAYMENT_STATUSES,
 } from "@/lib/pending-payment-status";
+import {
+  applyAffiliateApproval,
+  handleAffiliateRejection,
+  isAffiliateEntityType,
+} from "@/lib/affiliate/approvals";
 
 const approvalSchema = z.object({
   changeId: z.string(),
@@ -2020,6 +2025,14 @@ async function applyChange(
       }
       break;
 
+    case "AffiliateProgram":
+    case "Affiliate":
+    case "AffiliatePayoutBatch":
+    case "AffiliatePointsSettings":
+    case "AffiliatePointAdjustment":
+      await applyAffiliateApproval(change, context);
+      break;
+
     default:
       throw new Error(`Unknown entity type for approval: ${entityType}`);
   }
@@ -2133,6 +2146,10 @@ export async function POST(req: NextRequest) {
             data: { status: originalStatus || "ACTIVE" },
           });
         }
+      }
+
+      if (isAffiliateEntityType(change.entityType)) {
+        await handleAffiliateRejection(change);
       }
 
       await createAuditLog({

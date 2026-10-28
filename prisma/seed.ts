@@ -19,6 +19,7 @@ const permissions = {
     "audit-logs": { create: true, read: true, update: true, delete: true },
     "manual-repayment": { create: true, read: true, update: true, delete: true, approve: true },
     "repayment-approvals": { create: true, read: true, update: true, delete: true, approve: true },
+    affiliates: { create: true, read: true, update: true, delete: true },
   },
   loanProvider: {
     dashboard: { create: false, read: true, update: false, delete: false },
