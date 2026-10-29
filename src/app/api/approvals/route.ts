@@ -2030,6 +2030,8 @@ async function applyChange(
     case "AffiliatePayoutBatch":
     case "AffiliatePointsSettings":
     case "AffiliatePointAdjustment":
+    case "AffiliateAccount":
+    case "AffiliateAccountMovement":
       await applyAffiliateApproval(change, context);
       break;
 

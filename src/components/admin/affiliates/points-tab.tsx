@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoney, formatPoints } from '@/lib/affiliate/config';
 import { cn } from '@/lib/utils';
@@ -29,14 +30,14 @@ type PointRow = {
   createdAt: string;
   phone: string;
   affiliate: { name: string; code: string } | null;
-  type: 'EARN' | 'REVERSAL' | 'ADJUST';
+  type: 'EARN' | 'REVERSAL' | 'ADJUST' | 'REDEEM' | 'REFUND';
   points: number;
   birrValue: number;
   note: string | null;
 };
 
 type PointsResponse = {
-  settings: { pointValue: number; version: number; publishedAt: string | null; summary: string };
+  settings: SettingsForm & { version: number; publishedAt: string | null; summary: string };
   settingsPending: boolean;
   pendingAdjustments: { id: string; name: string | null; createdAt: string }[];
   summary: {
@@ -45,6 +46,7 @@ type PointsResponse = {
     earnedThisMonth: number;
     takenBackThisMonth: number;
     adjustedThisMonth: number;
+    usedThisMonth: number;
   };
   wallet: { phone: string; balance: number; name: string | null } | null;
   transactions: PointRow[];
@@ -54,6 +56,8 @@ const TYPE_LABELS: Record<PointRow['type'], string> = {
   EARN: 'Earned',
   REVERSAL: 'Taken back',
   ADJUST: 'Adjusted',
+  REDEEM: 'Used',
+  REFUND: 'Returned',
 };
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -155,6 +159,26 @@ function AdjustDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
   );
 }
 
+type UseSettings = {
+  enabled: boolean;
+  birrPerPoint: number | null;
+  minPoints: number;
+  maxPointsPerDay: number | null;
+  maxPointsPerMonth: number | null;
+};
+type SettingsForm = {
+  pointValue: number;
+  shop: UseSettings;
+  repayment: UseSettings;
+  withdrawal: UseSettings & { autoApproveUpTo: number };
+};
+
+const USES: Array<{ key: 'shop' | 'repayment' | 'withdrawal'; label: string; hint: string }> = [
+  { key: 'shop', label: 'Shop', hint: 'Pay a whole shop order; the merchant is paid when the customer confirms delivery.' },
+  { key: 'repayment', label: 'Loan repayment', hint: 'Pay what a loan needs now; the provider’s repayment account is paid.' },
+  { key: 'withdrawal', label: 'Withdrawal', hint: 'Cash to the customer’s own account.' },
+];
+
 function SettingsDialog({
   open,
   onOpenChange,
@@ -163,26 +187,30 @@ function SettingsDialog({
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
-  current: number;
+  current: SettingsForm;
   onDone: () => void;
 }) {
   const { toast } = useToast();
-  const [pointValue, setPointValue] = useState<number | null>(current);
+  const [form, setForm] = useState<SettingsForm>(current);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) setPointValue(current);
-  }, [open, current]);
+    if (open) setForm(JSON.parse(JSON.stringify(current)));
+    // Only when the dialog opens: `current` is rebuilt on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  const valid = !!pointValue && pointValue > 0 && pointValue !== current;
+  const setUse = (key: 'shop' | 'repayment' | 'withdrawal', patch: Partial<SettingsForm['withdrawal']>) =>
+    setForm((f) => ({ ...f, [key]: { ...f[key], ...patch } }));
+  const changed = JSON.stringify(form) !== JSON.stringify(current);
+  const valid = form.pointValue > 0 && USES.every((u) => form[u.key].minPoints >= 1);
 
   const submit = async () => {
-    if (!valid) return;
     setSaving(true);
     try {
       await apiRequest('/api/affiliates/points', {
         method: 'POST',
-        body: JSON.stringify({ action: 'UPDATE_SETTINGS', settings: { pointValue } }),
+        body: JSON.stringify({ action: 'UPDATE_SETTINGS', settings: form }),
       });
       toast({ title: 'Sent for approval', description: 'A checker must approve it on the Approvals page.' });
       onOpenChange(false);
@@ -196,28 +224,68 @@ function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Points settings</DialogTitle>
           <DialogDescription>
-            One setting for every program, so a point is worth the same whichever program gave it. Changes apply after a checker
-            approves them.
+            One set of settings for every program, so a point is worth the same whichever program gave it. Every use is paid from the
+            Affiliate Program account. Changes apply after a checker approves them.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1">
           <Label>Value of 1 point (ETB)</Label>
-          <NumberInput step="any" value={pointValue} onChange={setPointValue} />
+          <NumberInput step="any" value={form.pointValue} onChange={(v) => setForm((f) => ({ ...f, pointValue: v ?? 0 }))} />
           <p className="text-xs text-muted-foreground">
-            Shown to people next to their balance and used to value points in reports.
-            {pointValue && pointValue > 0 ? ` ${Math.round((1 / pointValue) * 100) / 100} points = 1 ETB.` : ''} How many points
-            a reward gives is set in each program.
+            Shown next to balances and used in reports, and what a point buys when a use has no rate of its own.
+            {form.pointValue > 0 ? ` ${Math.round((1 / form.pointValue) * 100) / 100} points = 1 ETB.` : ''}
           </p>
         </div>
+        {USES.map((u) => {
+          const s = form[u.key];
+          return (
+            <div key={u.key} className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium">{u.label}</div>
+                  <div className="text-xs text-muted-foreground">{u.hint}</div>
+                </div>
+                <Switch checked={s.enabled} onCheckedChange={(enabled) => setUse(u.key, { enabled })} />
+              </div>
+              {s.enabled && (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-1">
+                    <Label className="text-xs">ETB per point</Label>
+                    <NumberInput step="any" placeholder={`${form.pointValue} (point value)`} value={s.birrPerPoint} onChange={(birrPerPoint) => setUse(u.key, { birrPerPoint })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Minimum points</Label>
+                    <NumberInput min={1} step={1} value={s.minPoints} onChange={(v) => setUse(u.key, { minPoints: v ?? 1 })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Max points a day</Label>
+                    <NumberInput min={1} step={1} placeholder="No limit" value={s.maxPointsPerDay} onChange={(maxPointsPerDay) => setUse(u.key, { maxPointsPerDay })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Max points a month</Label>
+                    <NumberInput min={1} step={1} placeholder="No limit" value={s.maxPointsPerMonth} onChange={(maxPointsPerMonth) => setUse(u.key, { maxPointsPerMonth })} />
+                  </div>
+                  {u.key === 'withdrawal' && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <Label className="text-xs">Send automatically up to (ETB)</Label>
+                      <NumberInput value={form.withdrawal.autoApproveUpTo} onChange={(v) => setUse('withdrawal', { autoApproveUpTo: v ?? 0 })} />
+                      <p className="text-xs text-muted-foreground">Larger withdrawals wait for a checker in Affiliates → Account. 0 = a checker approves every withdrawal.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={() => void submit()} disabled={!valid || saving}>
+          <Button onClick={() => void submit()} disabled={!valid || !changed || saving}>
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Submit for approval
           </Button>
@@ -262,15 +330,16 @@ export function PointsTab({ canUpdate }: { canUpdate: boolean }) {
     <div className="space-y-4">
       <p className="max-w-3xl text-sm text-muted-foreground">
         Programs that pay rewards as points add them to each person&apos;s points wallet when the hold ends; take-backs remove them.
-        Every change is kept here with a reference. Ways to use points (shop, loan repayment, cash) come later, so no money moves yet.
+        Every change is kept here with a reference. Points are used to shop, repay loans or withdraw as set below; each use is paid from the Affiliate Program account (Affiliates → Account).
       </p>
 
       {s && (
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <Stat label="Points outstanding" value={formatPoints(s.outstanding)} hint={`≈ ${formatMoney(s.outstandingValue)}`} />
           <Stat label="Earned this month" value={formatPoints(s.earnedThisMonth)} />
           <Stat label="Taken back this month" value={formatPoints(s.takenBackThisMonth)} />
           <Stat label="Adjusted this month" value={formatPoints(s.adjustedThisMonth)} />
+          <Stat label="Used this month" value={formatPoints(s.usedThisMonth)} />
         </div>
       )}
 
@@ -349,6 +418,8 @@ export function PointsTab({ canUpdate }: { canUpdate: boolean }) {
             <SelectItem value="EARN">Earned</SelectItem>
             <SelectItem value="REVERSAL">Taken back</SelectItem>
             <SelectItem value="ADJUST">Adjusted</SelectItem>
+            <SelectItem value="REDEEM">Used</SelectItem>
+            <SelectItem value="REFUND">Returned</SelectItem>
           </SelectContent>
         </Select>
         <Button variant="outline" onClick={() => void load()} disabled={loading}>
@@ -414,7 +485,7 @@ export function PointsTab({ canUpdate }: { canUpdate: boolean }) {
         <SettingsDialog
           open={editingSettings}
           onOpenChange={setEditingSettings}
-          current={data.settings.pointValue}
+          current={{ pointValue: data.settings.pointValue, shop: data.settings.shop, repayment: data.settings.repayment, withdrawal: data.settings.withdrawal }}
           onDone={() => void load()}
         />
       )}

@@ -5,7 +5,10 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlayCircle, ShoppingCart, Minus, Plus, Package, ArrowLeft, ChevronRight, Percent, Tag, CreditCard, Banknote } from 'lucide-react';
+import { PlayCircle, ShoppingCart, Minus, Plus, Package, ArrowLeft, ChevronRight, Percent, Tag, CreditCard, Banknote, Coins } from 'lucide-react';
+import { formatPoints } from '@/lib/affiliate/config';
+import { pointsNeeded } from '@/lib/affiliate/earn-rules';
+import { newRequestId } from '@/components/earn/points-actions';
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
 
@@ -40,6 +43,17 @@ export function ShopItemDetail() {
   const [orderCount, setOrderCount] = useState(0);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
+  // Points balance and the shop's ETB per point; paying with points shows only when it's on.
+  const [pointsEntry, setPointsEntry] = useState<{ points: number; shopPointValue: number | null } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/earn?entry=1', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && typeof data.points === 'number') setPointsEntry({ points: data.points, shopPointValue: data.shopPointValue ?? null });
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!borrowerId) return;
@@ -156,6 +170,37 @@ export function ShopItemDetail() {
     if (optIds.length > 0) sp.set('optionValueIds', optIds.join(','));
     sp.set('step', 'products');
     router.push(`/loan?${sp.toString()}`);
+  };
+
+  // Paid in full from the customer's points through the Affiliate Program
+  // account; the merchant is paid when the customer confirms delivery.
+  const handlePayWithPoints = async () => {
+    if (placingOrder) return;
+    setPlacingOrder(true);
+    try {
+      const optionSelections = Object.values(selectedOptions)
+        .filter(Boolean)
+        .map((vid) => ({ optionValueId: vid }));
+      const res = await fetch('/api/earn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SHOP_ORDER',
+          merchantId: item.merchantId || item.merchant?.id,
+          items: [{ itemId, quantity, optionSelections }],
+          requestId: newRequestId(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to place order.');
+      }
+      router.push(`/bnpl/orders?borrowerId=${encodeURIComponent(borrowerId)}`);
+    } catch (e: any) {
+      alert(e.message || 'Failed to place order');
+    } finally {
+      setPlacingOrder(false);
+    }
   };
 
   const handlePlaceDirectOrder = async () => {
@@ -454,6 +499,29 @@ export function ShopItemDetail() {
                 Please select all options above to continue
               </p>
             )}
+
+            {pointsEntry?.shopPointValue && totalPrice > 0 && (() => {
+              const optionsIncomplete = item.optionGroups?.length > 0 && item.optionGroups.some((g: any) => !selectedOptions[g.id]);
+              const needed = pointsNeeded(totalPrice, pointsEntry.shopPointValue);
+              const enough = pointsEntry.points >= needed;
+              return (
+                <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 space-y-2">
+                  <Button
+                    className="w-full bg-violet-600 hover:bg-violet-700 text-white rounded-xl h-11 font-semibold text-sm shadow-sm disabled:opacity-50"
+                    onClick={handlePayWithPoints}
+                    disabled={optionsIncomplete || placingOrder || !enough}
+                  >
+                    <Coins className="h-4 w-4 mr-1.5" />
+                    {placingOrder ? 'Placing order...' : `Pay with points (${formatPoints(needed)})`}
+                  </Button>
+                  <p className="text-xs text-violet-900 text-center">
+                    {enough
+                      ? `You have ${formatPoints(pointsEntry.points)}. They are held now and used when you confirm delivery.`
+                      : `You need ${formatPoints(needed)}; you have ${formatPoints(Math.max(0, pointsEntry.points))}.`}
+                  </p>
+                </div>
+              );
+            })()}
 
             {(() => {
               const optionsIncomplete = item.optionGroups?.length > 0 && item.optionGroups.some((g: any) => !selectedOptions[g.id]);

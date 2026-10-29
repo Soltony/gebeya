@@ -6,6 +6,7 @@ import { OrderPricingError, priceOrderItems, toOrderItemsCreate } from '@/lib/ma
 import { areDisbursementsEnabled } from '@/lib/disbursement-control';
 import { validateBorrowerEligibility } from '@/actions/borrower-validation';
 import { getUserFromSession } from '@/lib/user';
+import { releasePointsOrder } from '@/lib/affiliate/transfers';
 
 export async function GET(req: NextRequest) {
   try {
@@ -55,6 +56,12 @@ export async function PUT(req: NextRequest) {
     const order = await prisma.order.findUnique({ where: { id } });
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 });
 
+    // Points orders pay the merchant, so they are only delivered through the
+    // customer's own code confirmation on the Earn API.
+    if (status === 'DELIVERED' && order.paymentType === 'POINTS') {
+      return NextResponse.json({ error: 'Confirm this order with the delivery code in the app.' }, { status: 400 });
+    }
+
     // Only allow delivery confirmation when order is ON_DELIVERY
     if (status === 'DELIVERED' && order.status !== 'ON_DELIVERY') {
       return NextResponse.json({ error: 'Order must be ON_DELIVERY to confirm delivery' }, { status: 400 });
@@ -91,6 +98,14 @@ export async function PUT(req: NextRequest) {
         where: { id: order.loanApplicationId },
         data: { status: 'CANCELLED' },
       }).catch(() => {});
+    }
+
+    // A cancelled points order gives the customer's points back (the worker
+    // sweep catches it if this fails).
+    if (status === 'CANCELLED' && order.paymentType === 'POINTS') {
+      await releasePointsOrder(id, updateData.cancelReason, order.borrowerId).catch((e) =>
+        console.error('Failed to return points of cancelled order:', e)
+      );
     }
 
     // ── When delivery is confirmed, CREATE the full loan + accounting + disbursement ──

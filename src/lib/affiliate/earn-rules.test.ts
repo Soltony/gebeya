@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   BLANK_CONFIG,
+  DEFAULT_POINTS_SETTINGS,
   PROGRAM_TEMPLATES,
+  birrPerPoint,
   formatPoints,
   parseProgramConfig,
   pointsForAmount,
@@ -10,8 +12,11 @@ import {
   type ProgramConfig,
 } from './config';
 import {
-  POINTS_USE_NOTE,
+  POINTS_WALLET_NOTE,
+  birrForPoints,
   checkSelfJoinEligibility,
+  pointsNeeded,
+  pointsUseProblem,
   rewardFor,
   customCodeProblem,
   describeProgramForAffiliate,
@@ -181,10 +186,52 @@ describe('points', () => {
   });
 
   test('points settings: a point needs a value above zero', () => {
-    expect(pointsSettingsSchema.parse({})).toEqual({ pointValue: 0.1 });
+    expect(pointsSettingsSchema.parse({}).pointValue).toBe(0.1);
     expect(pointsSettingsSchema.safeParse({ pointValue: 0 }).success).toBe(false);
     expect(formatPoints(1)).toBe('1 point');
     expect(formatPoints(-2450)).toBe('-2,450 points');
+  });
+});
+
+describe('using points', () => {
+  test('points and Birr convert at the rate of the use, never paying short', () => {
+    expect(birrForPoints(300, 0.08)).toBe(24);
+    expect(birrForPoints(3, 0.1)).toBe(0.3);
+    expect(pointsNeeded(245, 0.1)).toBe(2450);
+    expect(pointsNeeded(245.05, 0.1)).toBe(2451);
+    expect(pointsNeeded(5, 0.3)).toBe(17);
+  });
+
+  test('each use can have its own rate, or follow the point value', () => {
+    const settings = pointsSettingsSchema.parse({ pointValue: 0.1, withdrawal: { birrPerPoint: 0.08 } });
+    expect(birrPerPoint(settings, 'withdrawal')).toBe(0.08);
+    expect(birrPerPoint(settings, 'shop')).toBe(0.1);
+  });
+
+  test('uses start switched off', () => {
+    expect(DEFAULT_POINTS_SETTINGS.shop.enabled).toBe(false);
+    expect(DEFAULT_POINTS_SETTINGS.repayment.enabled).toBe(false);
+    expect(DEFAULT_POINTS_SETTINGS.withdrawal.enabled).toBe(false);
+  });
+
+  test('checks: on, minimum, balance, daily and monthly limits', () => {
+    const use = { enabled: true, birrPerPoint: null, minPoints: 100, maxPointsPerDay: 1000, maxPointsPerMonth: 3000 };
+    const fine = { points: 500, balance: 2000, usedToday: 0, usedThisMonth: 0 };
+    expect(pointsUseProblem(use, fine)).toBeNull();
+    expect(pointsUseProblem({ ...use, enabled: false }, fine)).toBe('This is not available right now.');
+    expect(pointsUseProblem(use, { ...fine, points: 50 })).toBe('Use at least 100 points.');
+    expect(pointsUseProblem(use, { ...fine, points: 2500 })).toBe('You only have 2,000 points.');
+    expect(pointsUseProblem(use, { ...fine, usedToday: 800 })).toBe('You can use up to 200 points more today.');
+    expect(pointsUseProblem(use, { ...fine, usedToday: 1000 })).toBe("You reached today's limit. Please try again tomorrow.");
+    expect(pointsUseProblem(use, { ...fine, usedThisMonth: 2800 })).toBe('You can use up to 200 points more this month.');
+    expect(pointsUseProblem(use, { ...fine, points: 12.5 })).toBe('Enter a whole number of points.');
+  });
+
+  test('settings: daily max at least the minimum, monthly at least the daily', () => {
+    expect(pointsSettingsSchema.safeParse({ shop: { minPoints: 100, maxPointsPerDay: 50 } }).success).toBe(false);
+    expect(pointsSettingsSchema.safeParse({ shop: { maxPointsPerDay: 1000, maxPointsPerMonth: 500 } }).success).toBe(false);
+    expect(pointsSettingsSchema.safeParse({ shop: { maxPointsPerDay: 1000, maxPointsPerMonth: 5000 } }).success).toBe(true);
+    expect(pointsSettingsSchema.safeParse({ withdrawal: { birrPerPoint: 0 } }).success).toBe(false);
   });
 });
 
@@ -283,7 +330,7 @@ describe('describeProgramForAffiliate', () => {
     const text = describeProgramForAffiliate(referAFriend);
     expect(text.headline).toBe('Earn 500 points for each friend who fully repays a loan.');
     expect(text.friendOffer).toBe('You get 200 points when you fully repay a loan.');
-    expect(text.payoutNote).toBe(POINTS_USE_NOTE);
+    expect(text.payoutNote).toBe(POINTS_WALLET_NOTE);
     expect(text.lines).toContain('You earn 500 points when a friend you invited fully repays a loan (first time only).');
     expect(text.lines).toContain('You can earn up to 5,000 points a month.');
     expect(text.lines).toContain('New points are on hold for 7 days, then become available.');

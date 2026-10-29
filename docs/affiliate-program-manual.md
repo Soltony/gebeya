@@ -31,7 +31,8 @@ Program ──► Affiliate gets a code ──► Customer enters the code in th
 | **Affiliate** | A person who brings customers: agent, borrower, merchant, partner/influencer or staff. Each affiliate has a unique **code**. Admins add affiliates; customers can also get their own code on the mini-app's **Earn** page. |
 | **Referral** | The link between one customer and the affiliate whose code they entered. A customer can be referred only once. |
 | **Commission** | A reward earned by an affiliate (or a welcome bonus for the new customer) when a rule matches an event. Rules always work it out in Birr. |
-| **Points** | In a program that pays rewards as points, the Birr reward is turned into points and added to the person's **points wallet** instead of being paid out. See [section 8](#8-points). |
+| **Points** | In a program that pays rewards as points, the Birr reward is turned into points and added to the person's **points wallet** instead of being paid out. People spend them in the shop, on a loan or as cash. See [section 8](#8-points). |
+| **Affiliate Program account** | The bank account every affiliate payment is made from: points used in the shop, on a loan or as cash, and money payouts. See [section 9](#9-the-affiliate-program-account). |
 | **Payout batch** | A group of payouts, one bank transfer per person, approved together. |
 
 ---
@@ -48,9 +49,9 @@ Go to **Access Control → Roles**, click **⋯** next to a role, then **Edit**,
 |---|---|
 | **R** (read) | See the Affiliates page and all its tabs. |
 | **C** (create) | Submit new programs and new affiliates. |
-| **U** (update) | Edit programs and affiliates, pause programs, suspend affiliates, reject referrals, prepare and submit payouts, retry or release failed payouts. |
+| **U** (update) | Edit programs and affiliates, pause programs, suspend affiliates, reject referrals, prepare and submit payouts, retry or release failed payouts, and run the Affiliate Program account: settings, funding, freezing and failed points payments. |
 
-The **checker** who approves requests needs **Update** on **Approvals**, the same as for other approvals. The maker and the checker must be **different people**: the system does not let anyone approve their own request.
+The **checker** who approves requests needs **Update** on **Approvals**, the same as for other approvals. The same permission approves or declines withdrawals that wait for review. The maker and the checker must be **different people**: the system does not let anyone approve their own request.
 
 ### 1.2 Start the background job
 
@@ -67,14 +68,14 @@ You can also run each part once by hand:
 | Command | What it does |
 |---|---|
 | `npm run run:worker -- affiliate-commissions` | Records new commissions, takes back reversed/NPL ones, releases held ones, prepares scheduled payout drafts. |
-| `npm run run:worker -- affiliate-payouts` | Sends approved payouts that were not sent yet (for example because disbursements were switched off). |
+| `npm run run:worker -- affiliate-payouts` | Sends approved payouts and points payments that were not sent yet (for example because disbursements were switched off or the account was short), and gives back the points of cancelled points orders. |
 
 ### 1.3 Optional settings (`.env`)
 
 | Setting | Default | Use |
 |---|---|---|
-| `AFFILIATE_PAYOUT_URL` | `EXTERNAL_DISBURSEMENT_URL` | Send affiliate payouts to a different CBS endpoint. |
-| `AFFILIATE_PAYOUT_PROVIDER_ID` | `FORCE_PROVIDER_ID`, then `PRO0002` | The CBS provider (pool account) the payouts are paid from. |
+| `AFFILIATE_PAYOUT_URL` | `EXTERNAL_DISBURSEMENT_URL` | Send affiliate payouts and points payments to a different CBS endpoint. |
+| `AFFILIATE_PAYOUT_PROVIDER_ID` | `FORCE_PROVIDER_ID`, then `PRO0002` | The CBS provider id that debits the Affiliate Program account, when the account has no **CBS provider id** of its own ([section 9](#9-the-affiliate-program-account)). |
 | `AFFILIATE_JOB_INTERVAL_MINUTES` | `1440` | How often `affiliate-service` runs. |
 | `AFFILIATE_PAYOUT_SMS` | off | Set to `true` to text people when a payout or withdrawal reaches their account. It uses `SMS_URL`, the bank's real SMS gateway, so leave it off on dev. |
 
@@ -113,7 +114,7 @@ A program has one or more rules. Each rule pays **one person**. To reward both t
 |---|---|
 | **When** | Loan disbursed · Loan fully repaid · BNPL order delivered · Direct-payment order paid |
 | **Pay** | Affiliate · New customer (welcome bonus) |
-| **Paid by** | Platform · Loan provider (see [section 10](#10-accounting)) |
+| **Paid by** | Platform · Loan provider (see [section 11](#11-accounting)) |
 | **Amount type** | Fixed amount, or Percentage of: loan amount · service fee · fees actually collected · order total. A percentage rule can have a min and max per commission. |
 | **How often** (per referred customer) | First time only · First N times · Every time |
 | **Only count when…** | Optional filters: loan provider, loan product, loan type (personal/BNPL), merchant, item category, repaid early/on time/late, minimum loan amount or order total. Empty = all. |
@@ -137,7 +138,7 @@ Notes:
 | **Prepare payouts** | Weekly or Monthly creates a **draft** batch automatically. Manual only means someone clicks "Prepare payouts now". |
 | **Minimum payout** | Smaller balances wait for a later batch. |
 | **Withholding tax (%)** | Deducted from each payout and each withdrawal; the net amount is sent. |
-| **People can withdraw their earnings in the mini-app** | Affiliates and customers withdraw their available earnings on the **Earn** page themselves, always to their own account. Payout batches keep working alongside. See [section 9](#9-payouts). |
+| **People can withdraw their earnings in the mini-app** | Affiliates and customers withdraw their available earnings on the **Earn** page themselves, always to their own account. Payout batches keep working alongside. See [section 10](#10-payouts). |
 | **Minimum withdrawal** | The smallest amount one withdrawal can send. |
 | **Max per day / Max per month** | How much one person can withdraw. Empty = no limit. Earnings can't be split, so one bigger than the room left waits. |
 | **Send automatically up to** | Withdrawals up to this net amount are sent at once. Larger ones wait for a checker in **Affiliates → Payouts**. 0 = a checker approves every withdrawal. |
@@ -216,13 +217,14 @@ People are recognised by their phone number, as everywhere else in the mini-app.
 |---|---|---|
 | **Get my code** | Customers who aren't affiliates yet, when a program has customer sign-up on | The offer, and either the **Get my code** button or what is still missing, for example *Fully repay your first loan to get your code.* |
 | **Your code** | Affiliates | The code with **Copy** and **Share**. Share opens the phone's share menu; when the app can't share, it copies a ready-made message instead. Customers who joined by themselves also see **Change code**, once. |
-| **Your points** | People in a points program, or who have points | The points balance with its value in Birr (*≈ 245 ETB*), points **on hold** with the next release date, and a note that ways to use points are coming soon. In a points program, rewards, caps and history are all shown in points. |
+| **Your points** | People in a points program, or who have points | The points balance with its value in Birr (*≈ 245 ETB*), points **on hold** with the next release date, and the ways to use them: **Shop**, **Pay a loan** and **Withdraw** (grey when that use is off or nothing can be used). In a points program, rewards, caps and history are all shown in points. See [section 8](#8-points). |
 | **Balance** | People with money rewards | **Available** (negative while a take-back is being recovered), **On hold** (with the next release date), **Paid to you**, and when payouts happen. Hidden in a points program unless money was earned before switching. |
 | **Withdraw** | Everyone whose program allows withdrawals | **Withdraw [amount]** sends all available earnings (within the limits) to their own account. A confirmation shows the earnings, tax, the amount they receive and the account (last 4 digits). When nothing can be withdrawn, the button is grey with the reason. |
 | **This month** | Affiliates | Earned this month (with the monthly cap, if there is one) and how many friends joined. |
 | **Friends** | Affiliates | Each invited customer by the **last 4 digits** of their phone, with their progress (Joined, Ordered, Has a loan, Repaid, or Not counted for a rejected referral) and what the affiliate earned from them. Latest 200, searchable by digits. |
 | **Earnings** | Everyone with commissions | Latest 50 commissions: on hold until a date, available, being paid, paid, cancelled, or taken back with a plain reason. Admins' rejection notes are never shown. |
 | **Payments** | Everyone who was paid or withdrew | Payouts and withdrawals: processing, being checked (waiting for a checker), paid, delayed (a failed transfer the bank is checking), declined, or not sent (released after a failure). Declined and not-sent money is back in the balance. |
+| **Used** | People who used points | Each use of points with its points, Birr and reference: **Points held** (a shop order waiting for delivery), **Being checked**, **Processing**, **Done**, **Delayed** (a failed transfer the bank is checking; the points stay held) or **Points returned**. |
 | **How it works** | Affiliates, and customers who can sign up | The program's rules in plain words. |
 
 Getting a code **never needs approval**: the program's sign-up settings were approved with the program. The customer becomes a **Borrower** affiliate of that program, named as on their bank account, and is paid into the account linked to their phone. Friends who enter the code see only the first name and initial, for example *Abebe K.*
@@ -299,14 +301,114 @@ Switching a program between Money and Points only affects rewards recorded after
 
 | Part | What it does |
 |---|---|
-| **Totals** | Points outstanding (with their value in Birr), and points earned, taken back and adjusted this month. |
-| **Points settings** | **Value of 1 point (ETB)**, one value for every program, so a point is worth the same whichever program gave it. It is shown to people next to their balance and used to value points in reports. **Change** sends it for approval; only one change can wait at a time. |
+| **Totals** | Points outstanding (with their value in Birr), and points earned, taken back, adjusted and used this month. |
+| **Points settings** | **Value of 1 point (ETB)**, one value for every program, so a point is worth the same whichever program gave it. It is shown to people next to their balance and used to value points in reports. Below it are the settings for each way of using points (see below). **Change** sends them for approval (**AffiliatePointsSettings**); only one change can wait at a time. |
 | **Adjustments** | **Adjust points** adds or removes points for one person (by phone), with a reason. A checker approves it on the **Approvals** page (**AffiliatePointAdjustment**). Points can't be removed below a balance of zero. |
-| **History** | Every change to anyone's points, newest first, with a `PTS-…` reference: Earned, Taken back or Adjusted. Search by phone (shows that person's balance), affiliate code or reference, and filter by type. Rows are never edited. |
+| **History** | Every change to anyone's points, newest first, with a `PTS-…` reference: Earned, Taken back, Adjusted, **Used** (points spent) or **Returned** (points given back when a use was declined or released, or its order cancelled). Search by phone (shows that person's balance), affiliate code or reference, and filter by type. Rows are never edited. |
 
-**Not yet:** using points (shop, loan repayment, cash) comes in a later step, after review. Until then the Earn page tells people their points are kept, and no money moves. Points aren't booked on provider ledgers either; finance decides how points are accounted for before they can be used.
+### Using points
 
-## 9. Payouts
+People use points in the mini-app in three ways. Each use is paid in Birr from the [Affiliate Program account](#9-the-affiliate-program-account) through CBS. Points never become money in any other way.
+
+| Use | How the customer does it | Who is paid | When the money moves |
+|---|---|---|---|
+| **Shop** | **Pay with points (N points)** on a shop item, below the BNPL and direct options. The whole order is paid with points. | The merchant's account (the **account number** in Merchants). A merchant without one can't take points. | The points are **held** when the order is placed. The merchant is paid when the customer confirms delivery with the code sent to their phone, as for a BNPL order. If the order is cancelled by the customer, the merchant or an admin, the points come back. |
+| **Loan repayment** | **Earn → Pay a loan**: choose the loan and the amount, up to what the loan needs now. | The loan provider's repayment account (the provider's **account number**). | Right away. It is recorded as a normal repayment of the loan, so it shows in **Reports → Repayments** with the bank's FT number. |
+| **Withdrawal** | **Earn → Withdraw**: enter the points. | The person's **own** account: the account linked to their phone, or an agent's registered payout account. Nobody can type an account number. | Up to **Send automatically up to**: at once. Larger withdrawals wait for a checker in **Affiliates → Account**. |
+
+**Settings for each use** (in **Points settings**; all three start **off**):
+
+| Setting | Meaning |
+|---|---|
+| **On / off** | When off, the Earn page button is grey and the shop doesn't offer points. |
+| **ETB per point** | What one point buys for this use. Empty = the value of 1 point. For example, a lower rate for withdrawals than for the shop makes shopping the better deal. |
+| **Minimum points** | The fewest points one use can take. |
+| **Max points a day / a month** | Per person, counting all their linked phones. Empty = no limit. The daily maximum can't be below the minimum, and the monthly one can't be below the daily one. |
+| **Send automatically up to (ETB)** | Withdrawals only. Larger ones wait for a checker. 0 = a checker approves every withdrawal. |
+
+**How it is kept safe**
+
+- **Points needed are rounded up**, so the bank never pays more than the points are worth: at 0.1 ETB per point, 245.05 ETB needs 2,451 points.
+- **The points and the money are reserved together.** When a use is accepted, its points leave the wallet (**Used**) and its Birr are held in the account in the same database transaction. If the use is declined or released, or its order is cancelled, the points come back (**Returned**) and the hold is released.
+- **One request at a time per person.** Requests sent at the same moment (from two phones, or a double tap) are handled one after the other, so the same points can't be spent twice.
+- **A repeated request isn't paid twice.** Each request from the app carries an id; sending it again returns the first result.
+- Daily and monthly limits count uses from the moment they are requested, including those still in progress.
+
+**Messages people can see**
+
+| Message | Reason |
+|---|---|
+| This is not available right now. | The use is off. |
+| Use at least 100 points. | Below the minimum. |
+| You only have 2,000 points. | Not enough points. |
+| You can use up to 200 points more today. *(or "…this month")* | The daily or monthly limit has less room left. |
+| You reached today's limit. Please try again tomorrow. *(or "You reached this month's limit.")* | No room left. |
+| You can pay up to 245.05 ETB now. | A loan repayment above what the loan needs now. |
+| This loan is already repaid. | Nothing is due on the loan. |
+| This shop can't take points yet. | The merchant has no account number. |
+| Paying with points is not available right now. Please try again later. | The Affiliate Program account is frozen or doesn't have enough available. |
+| Your points are on hold while the bank reviews your account. | The affiliate is suspended. |
+| Your points are busy with another request. Please try again. | Another request from the same person is being handled. |
+| Invalid or expired code. | Wrong or old delivery code on a points order. |
+
+## 9. The Affiliate Program account
+
+**Affiliates → Account** is the account every affiliate payment comes from: shop orders, loan repayments and withdrawals paid with points, and money payouts and withdrawals. It is one account in the bank's core system (CBS). This tab keeps its balance and its ledger.
+
+| Figure | Meaning |
+|---|---|
+| **Balance** | Money in the account, according to its ledger. |
+| **Held for payments in progress** | Payments that were accepted but are not confirmed by the bank yet, including shop orders waiting for delivery. |
+| **Available** | Balance minus held. A new payment is accepted only if it fits here. |
+
+**How a payment works**
+
+1. **Hold.** When a use is accepted or a payout is sent, its amount is held. If the available balance is too small or the account is frozen, nothing is held: the use is refused, and a payout stays **Approved**.
+2. **Send.** CBS moves the money from the account to the merchant, the loan provider or the customer.
+3. **Debit.** When CBS confirms, the account is debited and a ledger row is written with the bank's FT number. For a loan, the repayment is recorded in the same database transaction.
+4. If CBS fails, the amount stays held until someone deals with it (see the states below). Nothing is retried automatically, because the bank may have paid even if we got an error.
+
+**Settings** (need approval: **AffiliateAccount** on the Approvals page):
+
+| Setting | Meaning |
+|---|---|
+| **Name** | Shown on this tab. |
+| **Account number** | The CBS account, for reference and reconciliation. |
+| **CBS provider id** | The CBS transfer API chooses the account to debit by provider id, so this must be the provider id that CBS maps to this account. Empty = `AFFILIATE_PAYOUT_PROVIDER_ID` from the server settings ([section 1.3](#13-optional-settings-env)). |
+
+**Funding and adjustments**
+
+Money is put into the account at the bank with a normal transfer. Then record it here, so the ledger matches the bank, with **Record funding or adjustment**:
+
+- **Funding:** the amount and the FT number of the transfer into the account. A checker approves it (**AffiliateAccountMovement**). Each FT number can be recorded only once.
+- **Adjustment:** money in or out that isn't a payment, for example a correction after checking the bank statement. It needs an FT number and a reason. Money out can't be more than what is available.
+
+Recording a movement moves no money. It records money that has already moved at the bank.
+
+**Freeze** stops every payment from the account at once, for example while something is investigated. People see *Paying with points is not available right now…*, and approved payouts wait. **Unfreeze** needs approval.
+
+**Points payments**
+
+Every use of points with its reference (`AFT-…`), the customer, who is paid, points, Birr and state. Filter by use and state, or search by reference, phone, FT number, order id or loan id. A blue box counts withdrawals waiting for review and payments that need attention.
+
+| State | Meaning | What to do |
+|---|---|---|
+| **Points held** | A shop order waiting for delivery. | Nothing. Delivery pays the merchant; cancelling the order returns the points. |
+| **Waiting for review** | A withdrawal above **Send automatically up to**. | A checker (**Update on Approvals**) **Approves** it (sent right away) or **Declines** it with a reason (the points come back). Nobody can review their own withdrawal. |
+| **Ready to send**, **Sending** | Being sent. Anything left ready is sent by the background job. | Nothing. |
+| **No answer from the bank** | Still sending after 10 minutes. | As for **Failed**. |
+| **Failed** | CBS returned an error. The points and the hold are kept. | **Check with the bank first**, then: **Retry** if it didn't go through; **Paid** with the FT number if it did (this settles it and, for a loan, records the repayment); **Release** if it should not be paid (the points come back). A shop order can't be released: the customer has the goods, so the merchant must be paid. |
+| **Paid** | Done, with the bank's FT number. | Nothing. |
+| **Paid, not recorded** | The bank paid a loan repayment that could not be recorded on the loan, for example because the loan was repaid in the meantime. The account is debited. | Fix it by hand (manual repayment or refund), then **Resolve** with a note. |
+| **Points returned** | Declined, released, or the order was cancelled. | Nothing. |
+
+**Account ledger**
+
+Every movement of the account, newest first: reference (`AFA-…`), type (**Funding**, **Adjustment**, **Shop**, **Repayment**, **Withdrawal** or **Payout**), money in or out, the **balance after**, the bank's FT number and a description. Rows are never edited, and the balance is always the sum of the rows. Use it to reconcile with the CBS statement of the account.
+
+Every step is also in the audit log, including uses refused because the account was short (`AFFILIATE_ACCOUNT_SHORT`).
+
+## 10. Payouts
 
 1. **Prepare.** Choose the program and click **Prepare payouts now**, or wait for the weekly/monthly draft. The system groups all "Ready to pay" commissions into one transfer per person.
    - It **skips** people with no payout account, people below the minimum, and suspended affiliates. The toast says how many were skipped; their commissions wait for a later batch.
@@ -317,9 +419,12 @@ Switching a program between Money and Points only affects rewards recorded after
    - **Completed:** all transfers succeeded.
    - **Partial:** some failed. A failed transfer is **never retried automatically**, because the bank may have paid it even if we got an error. First **check with the bank**, then:
      - **Retry:** send it again (only if the bank did not pay it);
+     - **Paid:** the bank shows it went through. Enter its FT number, and the payout is settled without sending it again;
      - **Release:** give up on this transfer; its commissions go into the next batch.
 
-If **Disbursement Control** is switched off, approved payouts wait as **Approved**. They are sent when it is switched back on: by the background job, or right away with `npm run run:worker -- affiliate-payouts`.
+Payouts are paid from the [Affiliate Program account](#9-the-affiliate-program-account): sending holds the amount, and success debits the account (a **Payout** row in its ledger).
+
+If **Disbursement Control** is switched off, or the account is frozen or doesn't have enough available, approved payouts wait as **Approved**. They are sent when that is fixed: by the background job, or right away with `npm run run:worker -- affiliate-payouts`.
 
 ### Withdrawals
 
@@ -331,16 +436,18 @@ When a program allows withdrawals, people withdraw their available earnings them
 - **Approve** or **Decline** needs **Update on Approvals** (the checker permission), not only access to Affiliates. Nobody can review their own withdrawal: a staff member who is an affiliate is blocked by phone number.
   - **Approve:** the money is sent right away.
   - **Decline:** asks for a reason, which goes to the audit log. Nothing is paid, the earnings become available again, and the customer sees *Declined*.
-- A failed withdrawal is handled like any failed payout: check with the bank, then **Retry** or **Release**. While it is unresolved, the person can't start another withdrawal.
+- A failed withdrawal is handled like any failed payout: check with the bank, then **Retry**, **Paid** or **Release**. While it is unresolved, the person can't start another withdrawal.
 - A withdrawal waiting for review never blocks **Prepare payouts now**.
 
-## 10. Accounting
+## 11. Accounting
 
 - **Paid by: Loan provider.** When the commission becomes "Ready to pay", it is booked in that provider's ledger: Debit **Commission Expense**, Credit **Commission Payable**. When it is paid, Commission Payable is debited. These two accounts are created automatically the first time they are needed.
 - **Paid by: Platform.** Not booked in any provider ledger. The commission and payout tables and the reports are the record.
 - These commission journals are not linked to a loan, so they don't appear in loan transaction reports.
+- **Points** are not booked in provider ledgers. The [Affiliate Program account](#9-the-affiliate-program-account) ledger records the Birr paid for them.
+- **Loan repayments paid with points** are booked like any other repayment of that loan in the loan provider's ledger, and reduce what the loan owes. The journal reads *Points repayment AFT-… of loan … from the affiliate account (FT: …)*, so **Reports → Repayments** shows the FT number.
 
-## 11. Reports
+## 12. Reports
 
 **Affiliates → Reports** shows, per program and per affiliate:
 
@@ -350,7 +457,7 @@ When a program allows withdrawals, people withdraw their available earnings them
 
 Use **From / To** to filter (referrals by referral date, money by event date) and **Export to Excel** for both tables.
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Problem | What to check |
 |---|---|
@@ -363,12 +470,18 @@ Use **From / To** to filter (referrals by referral date, money by event date) an
 | No commission after a loan/order | Did the job run? Then check the list in [section 7](#7-commissions). Try the case in **Preview**. |
 | Commission stays "On hold" | It is waiting for the hold period; the next job run after that date releases it. |
 | Person missing from a payout batch | No payout account (or no active linked account for borrowers and new customers), below the minimum, or affiliate suspended. |
-| Payout stays "Approved" | Disbursement Control is off. Turn it on and run `npm run run:worker -- affiliate-payouts`. |
-| Payout "Failed" | Check with the bank first, then **Retry** or **Release**. |
+| Payout stays "Approved" | Disbursement Control is off, or the Affiliate Program account is frozen or short. Fix that, then run `npm run run:worker -- affiliate-payouts`. |
+| Payout "Failed" | Check with the bank first, then **Retry**, **Paid** (with the FT number) or **Release**. |
 | No **Approve / Decline** on a withdrawal | You need **Update on Approvals**. *You can't review your own withdrawal* means your phone number is the affiliate's. |
 | Customer has money but **Withdraw** is grey | The reason is shown under the balance; see the messages in [section 5.2](#52-the-earn-page). |
 | No points after a reward in a points program | Did the job run? The commission stays **On hold** until the hold ends, then shows **Added as points**. Rewards recorded before the program switched to Points stay money. |
 | *This would take the balance below zero* | A points adjustment can't remove more points than the person has. |
+| *Paying with points is not available right now* | The Affiliate Program account is frozen or doesn't have enough available. Check **Affiliates → Account**. After topping it up at the bank, record the funding. |
+| **Shop**, **Pay a loan** or **Withdraw** is grey on the Earn page | The use is off in **Points settings**, the person has fewer points than the minimum, or the limit is reached. **Pay a loan** also needs a loan with something due now. |
+| No **Pay with points** on a shop item | Shopping with points is off in **Points settings**. |
+| Points payment **Failed** or **No answer from the bank** | Check with the bank, then **Retry**, **Paid** or **Release** in **Affiliates → Account**. |
+| Points payment **Paid, not recorded** | Fix the loan by hand, then **Resolve**. |
+| Funding refused: *…already recorded* | That FT number is in the ledger already. Each transfer into the account is recorded once. |
 
 ---
 
@@ -525,6 +638,8 @@ With the customer who applied the code (`251901246565`):
 
 ## 6. Test payouts
 
+Payouts are paid from the Affiliate Program account, so fund it first ([section 9](#9-test-using-points), step 2). Otherwise approved payouts stay **Approved**.
+
 1. Stop the mock bank and start it in **fail** mode: `node scripts/mock-cbs.js fail`.
 2. **Affiliates → Payouts:** choose `Dev test`, then **Prepare payouts now**. A draft with 2 payouts is created: Dev Agent to `TEST0001`, and the customer to their linked account.
 3. **Submit for approval**. As Approver, approve the **AffiliatePayoutBatch** request.
@@ -537,7 +652,7 @@ With the customer who applied the code (`251901246565`):
 
 ## 7. Test withdrawals
 
-You need earnings that are **Ready to pay** and not paid yet: run this before section 6, or create new ones with section 5. Keep the mock bank running normally.
+You need earnings that are **Ready to pay** and not paid yet: run this before section 6, or create new ones with section 5. Keep the mock bank running normally, and fund the Affiliate Program account first ([section 9](#9-test-using-points), step 2).
 
 1. **Turn on withdrawals.** As Super Admin, edit `Dev test`. In **Limits & payouts**, turn on **People can withdraw their earnings in the mini-app**, set **Minimum withdrawal** to 10, leave the maximums empty, and set **Send automatically up to** to 30. Submit, then approve as Approver.
 2. **A small withdrawal, sent at once.** Set `DEV_BORROWER_ID=251901246565` (it has the 20 ETB welcome bonus from section 5) and restart. Open http://localhost:9002/earn and tap **Withdraw 20 ETB**. The dialog shows the account's last 4 digits. Confirm.
@@ -570,7 +685,39 @@ More cases:
 | Money before the switch | Rewards recorded before step 1 | Still money: payouts and withdrawals as before. |
 | Search | Search **Points** by phone, affiliate code or `PTS-…` reference | A phone or code shows that person's balance and their rows. |
 
-## 9. Test take-backs (optional)
+## 9. Test using points
+
+Keep the mock bank running normally. Give the Approver **R** on Affiliates ([section 1.4](#14-give-the-maker-access)) so they can review withdrawals on the **Account** tab.
+
+1. **Look at the account.** As Super Admin, open **Affiliates → Account**: the balance is 0, and the ledger is empty.
+2. **Fund the account.** Click **Record funding or adjustment**: **Funding**, 5000, bank reference `FTDEV0001`. As Approver, approve the **AffiliateAccountMovement** request. The account shows a **Balance** of 5,000 ETB and the ledger has a **Funding** row. Recording `FTDEV0001` again is refused.
+3. **Turn on the uses.** **Affiliates → Points → Change**: turn on **Shop**, **Loan repayment** and **Withdrawal**, keep **Minimum points** at 100, and set **Send automatically up to** to 20. As Approver, approve the **AffiliatePointsSettings** request.
+4. **Give points.** **Adjust points**: phone `0911000001` (Dev Agent), add 3000, and approve. Set `DEV_BORROWER_ID=251911000001`, restart, and open http://localhost:9002/earn. **Your points** shows 3,000 points with **Shop**, **Pay a loan** and **Withdraw** (**Pay a loan** is grey: Dev Agent has no loan).
+5. **A small withdrawal, sent at once.** **Withdraw** 150 points. The dialog shows what you receive (15 ETB at 0.1 ETB per point) and the account's last 4 digits. Confirm. Expected: a request in the mock bank's console, and **Used** shows **Done**. In **Affiliates → Account**, the payment is **Paid** with a `MOCK-…` FT number and the ledger has a **Withdrawal** row; the balance is 4,985 ETB.
+6. **A large withdrawal, checked first.** Withdraw 500 points (50 ETB, above 20). **Used** shows **Being checked**. As Approver, open **Affiliates → Account**: the blue box says 1 withdrawal is waiting. **Approve** pays it. **Decline** with a reason gives the points back instead (**Returned** in **Points → History**).
+7. **Shop.** Still as Dev Agent, open a shop item and tap **Pay with points (N points)**. **Orders** shows the order with a **Points** badge, and **Used** shows **Points held**. If the order waits for the merchant, click **Confirm availability** in **Admin → Merchants → Orders**. In the mini-app, **Confirm delivery**: there is no agreement step. Enter the code (read it with the SQL in [section 5](#5-test-commissions-real-bnpl-flow)). The order is **Delivered**, the mock bank pays the merchant, and the ledger has a **Shop** row.
+8. **Cancel a points order.** Place another order with points and cancel it. **Used** shows **Points returned** and **Points → History** has a **Returned** row.
+9. **Repay a loan.** Find a customer with an unpaid loan on the **dev database**:
+
+   ```sql
+   SELECT TOP 5 borrowerId, id, loanAmount, dueDate FROM Loan WHERE repaymentStatus = 'Unpaid' ORDER BY disbursedDate DESC;
+   ```
+
+   Give that phone 1000 points with **Adjust points**, set `DEV_BORROWER_ID` to it and restart. **Earn → Pay a loan**: choose the loan, enter 20, check the points shown and confirm. Expected: **Done**, the loan owes 20 ETB less, **Reports → Repayments** lists the 20 ETB payment with its `MOCK-…` FT number, and the account ledger has a **Repayment** row.
+
+More cases:
+
+| Case | How | Expected |
+|---|---|---|
+| Account empty | Try any use before step 2 | *Paying with points is not available right now…* No points are taken. |
+| Transfer fails | Start the mock in **fail** mode, then withdraw 150 points | **Used**: *Delayed*. **Account**: **Failed**, with the amount still held. Start the mock normally, then **Retry**; or **Paid** with an FT number; or **Release** (the points come back). |
+| Freeze | **Freeze** with a reason, then try any use | *Paying with points is not available right now…* **Unfreeze** needs the Approver. |
+| Daily limit | Set the withdrawal **Max points a day** to 200, then, as someone who hasn't withdrawn today, withdraw 150 and then 100 | *You can use up to 50 points more today.* |
+| Pay too much | **Pay a loan** with more than it needs now | *You can pay up to … now.* |
+| Merchant without an account | Pay with points at a merchant with no account number | *This shop can't take points yet.* |
+| Same request twice | Tap confirm twice quickly | One payment. |
+
+## 10. Test take-backs (optional)
 
 | Case | How | Expected after the job runs |
 |---|---|---|
@@ -578,12 +725,15 @@ More cases:
 | Reversed loan | Reverse the test loan with the normal Reversals flow, then run the job. | Its commissions are taken back. |
 | NPL | Customer becomes NPL (NPL job), then run the job. | If "take back when NPL" is on: commissions from the last N days are taken back, and no new ones are recorded while NPL. |
 
-## 10. Reset the test data
+## 11. Reset the test data
 
-Run this on the **dev database only**. It removes every affiliate program, affiliate, referral, commission and payout, plus their approval requests:
+Run this on the **dev database only**. It removes every affiliate program, affiliate, referral, commission, payout, points payment and the Affiliate Program account, plus their approval requests:
 
 ```sql
 -- DEV ONLY
+DELETE FROM AffiliateTransfer;
+DELETE FROM AffiliateAccountEntry;
+DELETE FROM AffiliateAccount;
 DELETE FROM AffiliatePointTransaction;
 DELETE FROM AffiliatePointsSettingsVersion;
 DELETE FROM AffiliateCommission;
@@ -593,14 +743,14 @@ DELETE FROM AffiliateReferral;
 DELETE FROM Affiliate;
 DELETE FROM AffiliateProgramVersion;
 DELETE FROM AffiliateProgram;
-DELETE FROM PendingChange WHERE entityType IN ('AffiliateProgram', 'Affiliate', 'AffiliatePayoutBatch', 'AffiliatePointsSettings', 'AffiliatePointAdjustment');
+DELETE FROM PendingChange WHERE entityType IN ('AffiliateProgram', 'Affiliate', 'AffiliatePayoutBatch', 'AffiliatePointsSettings', 'AffiliatePointAdjustment', 'AffiliateAccount', 'AffiliateAccountMovement');
 ```
 
-It does not remove loans, orders or ledger entries. Use **Paid by: Platform** rules on dev, so nothing is booked in the provider ledgers.
+It does not remove loans, orders or ledger entries. Loan repayments made with points are real repayments of those loans and stay. Use **Paid by: Platform** rules on dev, so nothing is booked in the provider ledgers.
 
 **When you finish testing:** restore the real `EXTERNAL_DISBURSEMENT_URL` in `.env`, and set `DEV_BORROWER_ID` back if needed.
 
-## 11. Where the code is
+## 12. Where the code is
 
 | Part | Location |
 |---|---|
@@ -611,6 +761,9 @@ It does not remove loans, orders or ledger entries. Use **Paid by: Platform** ru
 | Withdrawals: what one would pay, requesting, review | `src/lib/affiliate/withdrawals.ts` (limits and messages in `earn-rules.ts`) |
 | Points wallet: history rows, settings, approvals, admin history | `src/lib/affiliate/points.ts`, requests in `points-admin.ts`, API `src/app/api/affiliates/points`, screen `src/components/admin/affiliates/points-tab.tsx` |
 | Points earning and take-backs in the job | `releaseHeldCommissions` and `takeBackCommission` in `src/lib/affiliate/commissions.ts` |
+| Affiliate Program account: balance, holds, debits, funding | `src/lib/affiliate/account.ts`, requests and lists in `account-admin.ts`, API `src/app/api/affiliates/account`, screen `src/components/admin/affiliates/account-tab.tsx` |
+| Using points: requests, sending, settling, review and fixes | `src/lib/affiliate/transfers.ts` (limits and messages in `earn-rules.ts`, the CBS call in `cbs.ts`) |
+| Using points on screen | Earn page `src/components/earn/points-actions.tsx`, shop `src/components/shop/shop-item-detail.tsx`, orders `src/app/bnpl/orders/page.tsx` |
 | Rules engine (used by the job and the Preview) | `src/lib/affiliate/engine.ts` (tests: `engine.test.ts`) |
 | Daily job | `src/lib/affiliate/commissions.ts` |
 | Payouts | `src/lib/affiliate/payouts.ts` |

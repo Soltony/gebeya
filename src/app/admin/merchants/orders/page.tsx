@@ -44,7 +44,7 @@ const STATUS_FILTER_OPTIONS = [
   'DELIVERED',
   'CANCELLED',
 ] as const;
-const PAYMENT_TYPE_OPTIONS = [ALL_FILTER_VALUE, 'BNPL', 'DIRECT'] as const;
+const PAYMENT_TYPE_OPTIONS = [ALL_FILTER_VALUE, 'BNPL', 'DIRECT', 'POINTS'] as const;
 
 const statusColor: Record<string, string> = {
   PENDING: 'bg-yellow-100 text-yellow-800 border-yellow-300',
@@ -578,10 +578,12 @@ export default function MerchantOrdersPage() {
                           <Badge
                             className={order.paymentType === 'DIRECT'
                               ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : 'bg-amber-100 text-amber-800 border-amber-300'}
+                              : order.paymentType === 'POINTS'
+                                ? 'bg-violet-100 text-violet-800 border-violet-300'
+                                : 'bg-amber-100 text-amber-800 border-amber-300'}
                             variant="outline"
                           >
-                            {order.paymentType === 'DIRECT' ? 'Direct' : 'BNPL'}
+                            {order.paymentType === 'DIRECT' ? 'Direct' : order.paymentType === 'POINTS' ? 'Points' : 'BNPL'}
                           </Badge>
                           {order.channel === 'TELEGRAM' && (
                             <Badge

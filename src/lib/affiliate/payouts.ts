@@ -14,25 +14,19 @@ import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { areDisbursementsEnabled } from '@/lib/disbursement-control';
-import {
-  auditExternalApiError,
-  auditExternalApiRequest,
-  auditExternalApiResponse,
-  createAuditLog,
-  newAuditCorrelationId,
-} from '@/lib/audit-log';
+import { createAuditLog } from '@/lib/audit-log';
 import sendSms from '@/lib/sms';
 import { formatMoney } from './config';
 import { SELF_SERVICE } from './earn-rules';
 import { roundMoney } from './engine';
 import { postCommissionPayment } from './ledger';
 import { chunk } from './db';
+import { debitReserved, getAccountState, releaseFunds, reserveFunds } from './account';
+import { cbsTransfer } from './cbs';
 import { AffiliateError, getCurrentProgramVersion, type ProgramRuntime } from './programs';
 
 /** A payout stuck in SENDING this long (e.g. the server restarted mid-call) can be handled by an admin. */
 const STALE_SENDING_MINUTES = 10;
-/** A timed-out request is marked FAILED with an "outcome unknown" warning, never retried automatically. */
-const PAYOUT_TIMEOUT_MS = 60_000;
 
 /** The account a borrower or new customer is paid into: the active one linked to their phone. */
 export async function activeAccountForPhone(phone: string): Promise<string | null> {
@@ -352,127 +346,51 @@ async function refreshBatchStatus(batchId: string) {
   });
 }
 
-function payoutTarget() {
-  const url = process.env.AFFILIATE_PAYOUT_URL || process.env.EXTERNAL_DISBURSEMENT_URL;
-  const providerId = process.env.AFFILIATE_PAYOUT_PROVIDER_ID || process.env.FORCE_PROVIDER_ID || 'PRO0002';
-  const user = process.env.EXTERNAL_API_USERNAME;
-  const pass = process.env.EXTERNAL_API_PASSWORD;
-  const auth = user && pass ? 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64') : undefined;
-  return { url, providerId, auth };
-}
-
-async function markPayoutFailed(payoutId: string, message: string, extra: { statusCode?: number | null; responsePayload?: string | null } = {}) {
+async function markPayoutFailed(
+  payoutId: string,
+  message: string,
+  extra: { statusCode?: number | null; requestPayload?: string | null; responsePayload?: string | null } = {}
+) {
   await prisma.affiliatePayout.updateMany({
     where: { id: payoutId, status: 'SENDING' },
-    data: { status: 'FAILED', errorMessage: message, statusCode: extra.statusCode ?? null, responsePayload: extra.responsePayload ?? null },
+    data: {
+      status: 'FAILED',
+      errorMessage: message,
+      statusCode: extra.statusCode ?? null,
+      ...(extra.requestPayload !== undefined ? { requestPayload: extra.requestPayload } : {}),
+      responsePayload: extra.responsePayload ?? null,
+    },
   });
 }
 
 export type SendOutcome = { status: 'SUCCESS' | 'FAILED' | 'SKIPPED'; message: string };
 
+/** The account cannot hold this payout; it stays APPROVED until the account is funded or unfrozen. */
+const ACCOUNT_SHORT = 'The affiliate account is frozen or its balance is too low.';
+
 /**
- * Sends one payout to CBS. `retry` re-sends a FAILED payout (or one stuck in
- * SENDING); only an admin action passes it.
+ * The bank paid a payout: mark it, its commissions and the provider ledgers
+ * paid, and turn its hold on the affiliate account into a debit, in one transaction.
  */
-export async function sendPayout(payoutId: string, options: { retry?: boolean; actorId?: string } = {}): Promise<SendOutcome> {
-  if (!(await areDisbursementsEnabled())) {
-    return { status: 'SKIPPED', message: 'Disbursements are currently disabled.' };
-  }
-  const now = new Date();
-  const claim = await prisma.affiliatePayout.updateMany({
-    where: options.retry
-      ? {
-          id: payoutId,
-          OR: [{ status: 'FAILED' }, { status: 'SENDING', lastAttemptAt: { lt: subMinutes(now, STALE_SENDING_MINUTES) } }],
-        }
-      : { id: payoutId, status: 'APPROVED' },
-    data: { status: 'SENDING', attempts: { increment: 1 }, lastAttemptAt: now, errorMessage: null },
-  });
-  if (claim.count === 0) return { status: 'SKIPPED', message: 'This payout is not ready to be sent.' };
-
-  const payout = await prisma.affiliatePayout.findUnique({ where: { id: payoutId } });
-  if (!payout) return { status: 'SKIPPED', message: 'Payout not found.' };
-
-  const { url, providerId, auth } = payoutTarget();
-  const body = { creditAccount: payout.creditAccount, providerId, amount: payout.netAmount };
-  const auditBase = {
-    actorId: options.actorId ?? 'system',
-    integration: 'AFFILIATE_PAYOUT',
-    entity: 'AffiliatePayout',
-    entityId: payout.id,
-    correlationId: newAuditCorrelationId(),
-  };
-
-  if (!url) {
-    await markPayoutFailed(payout.id, 'Missing EXTERNAL_DISBURSEMENT_URL (or AFFILIATE_PAYOUT_URL) env var');
-    await refreshBatchStatus(payout.batchId);
-    return { status: 'FAILED', message: 'Payout service URL is not configured.' };
-  }
-
-  await prisma.affiliatePayout.update({ where: { id: payout.id }, data: { requestPayload: JSON.stringify(body) } });
-  await auditExternalApiRequest(auditBase, {
-    method: 'POST',
-    url,
-    headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) },
-    body,
-  }).catch(() => null);
-
-  const startedAt = Date.now();
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(PAYOUT_TIMEOUT_MS),
-    });
-  } catch (error: any) {
-    await auditExternalApiError(auditBase, error, { durationMs: Date.now() - startedAt }).catch(() => null);
-    await markPayoutFailed(
-      payout.id,
-      `Request failed: ${String(error?.message ?? error)}. The bank may still have processed it; check before retrying.`
-    );
-    await refreshBatchStatus(payout.batchId);
-    return { status: 'FAILED', message: 'Could not reach the payout service.' };
-  }
-
-  const text = await res.text().catch(() => '');
-  let parsed: any = null;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = text;
-  }
-  await auditExternalApiResponse(auditBase, {
-    status: res.status,
-    statusText: res.statusText,
-    body: parsed,
-    durationMs: Date.now() - startedAt,
-  }).catch(() => null);
-
-  if (!res.ok) {
-    await markPayoutFailed(payout.id, `Payout service returned status ${res.status}.`, { statusCode: res.status, responsePayload: text || null });
-    await refreshBatchStatus(payout.batchId);
-    return { status: 'FAILED', message: `Payout service returned status ${res.status}.` };
-  }
-
-  const transactionId =
-    parsed && typeof parsed === 'object'
-      ? parsed.transactionId ?? parsed.transactionid ?? parsed.transaction_id ?? null
-      : null;
-
-  await prisma.$transaction(async (tx) => {
+async function settlePayout(
+  payout: { id: string; netAmount: number; creditAccount: string; beneficiaryPhone: string },
+  bank: { transactionId: string | null; statusCode?: number | null; responsePayload?: string | null },
+  fromStatuses: string[]
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
     const done = await tx.affiliatePayout.updateMany({
-      where: { id: payout.id, status: 'SENDING' },
+      where: { id: payout.id, status: { in: fromStatuses } },
       data: {
         status: 'SUCCESS',
         paidAt: new Date(),
-        transactionId: transactionId ? String(transactionId) : null,
-        statusCode: res.status,
-        responsePayload: text || null,
+        transactionId: bank.transactionId,
+        statusCode: bank.statusCode ?? null,
+        ...(bank.responsePayload !== undefined ? { responsePayload: bank.responsePayload } : {}),
+        errorMessage: null,
+        fundsReserved: false,
       },
     });
-    if (done.count === 0) return;
+    if (done.count === 0) return false;
     await tx.affiliateCommission.updateMany({ where: { payoutId: payout.id, status: 'IN_PAYOUT' }, data: { status: 'PAID' } });
 
     // Settle Commission Payable on each provider ledger the payout drew from.
@@ -490,15 +408,87 @@ export async function sendPayout(payoutId: string, options: { retry?: boolean; a
         description: `Affiliate commission paid to ${payout.beneficiaryPhone} (payout ${payout.id})`,
       });
     }
+    await debitReserved(tx, {
+      idempotencyKey: `PAYOUT:${payout.id}`,
+      type: 'PAYOUT',
+      amount: payout.netAmount,
+      counterpartyAccount: payout.creditAccount,
+      bankReference: bank.transactionId,
+      payoutId: payout.id,
+      description: `Affiliate payout ${payout.id} to ${payout.beneficiaryPhone}`,
+    });
+    return true;
   });
+}
 
+/**
+ * Sends one payout to CBS from the affiliate account. `retry` re-sends a
+ * FAILED payout (or one stuck in SENDING); only an admin action passes it.
+ */
+export async function sendPayout(payoutId: string, options: { retry?: boolean; actorId?: string } = {}): Promise<SendOutcome> {
+  if (!(await areDisbursementsEnabled())) {
+    return { status: 'SKIPPED', message: 'Disbursements are currently disabled.' };
+  }
+  const account = await getAccountState();
+  if (account.status !== 'ACTIVE') return { status: 'SKIPPED', message: ACCOUNT_SHORT };
+  const now = new Date();
+
+  // Claim the payout and hold its amount on the affiliate account together:
+  // if the account can't hold it, nothing changes and it waits as APPROVED.
+  let claimed: boolean;
+  try {
+    claimed = await prisma.$transaction(async (tx) => {
+      const claim = await tx.affiliatePayout.updateMany({
+        where: options.retry
+          ? {
+              id: payoutId,
+              OR: [{ status: 'FAILED' }, { status: 'SENDING', lastAttemptAt: { lt: subMinutes(now, STALE_SENDING_MINUTES) } }],
+            }
+          : { id: payoutId, status: 'APPROVED' },
+        data: { status: 'SENDING', attempts: { increment: 1 }, lastAttemptAt: now, errorMessage: null },
+      });
+      if (claim.count === 0) return false;
+      const payout = await tx.affiliatePayout.findUniqueOrThrow({ where: { id: payoutId }, select: { netAmount: true, fundsReserved: true } });
+      if (!payout.fundsReserved) {
+        if (!(await reserveFunds(tx, payout.netAmount))) throw new AffiliateError(ACCOUNT_SHORT, 409);
+        await tx.affiliatePayout.update({ where: { id: payoutId }, data: { fundsReserved: true } });
+      }
+      return true;
+    });
+  } catch (error) {
+    if (error instanceof AffiliateError && error.message === ACCOUNT_SHORT) return { status: 'SKIPPED', message: ACCOUNT_SHORT };
+    throw error;
+  }
+  if (!claimed) return { status: 'SKIPPED', message: 'This payout is not ready to be sent.' };
+
+  const payout = await prisma.affiliatePayout.findUnique({ where: { id: payoutId } });
+  if (!payout) return { status: 'SKIPPED', message: 'Payout not found.' };
+
+  const result = await cbsTransfer({
+    creditAccount: payout.creditAccount,
+    amount: payout.netAmount,
+    providerId: account.effectiveCbsProviderId,
+    audit: { actorId: options.actorId ?? 'system', integration: 'AFFILIATE_PAYOUT', entity: 'AffiliatePayout', entityId: payout.id },
+  });
+  if (!result.ok) {
+    await markPayoutFailed(payout.id, result.message, {
+      statusCode: result.statusCode,
+      requestPayload: result.requestPayload,
+      responsePayload: result.responsePayload,
+    });
+    await refreshBatchStatus(payout.batchId);
+    return { status: 'FAILED', message: result.message };
+  }
+
+  await prisma.affiliatePayout.update({ where: { id: payout.id }, data: { requestPayload: result.requestPayload } });
+  await settlePayout(payout, { transactionId: result.transactionId, statusCode: result.statusCode, responsePayload: result.responsePayload }, ['SENDING']);
   await refreshBatchStatus(payout.batchId);
   await createAuditLog({
     actorId: options.actorId ?? 'system',
     action: 'AFFILIATE_PAYOUT_SENT',
     entity: 'AffiliatePayout',
     entityId: payout.id,
-    details: { amount: payout.netAmount, creditAccount: payout.creditAccount, transactionId },
+    details: { amount: payout.netAmount, creditAccount: payout.creditAccount, transactionId: result.transactionId },
   });
   // Opt-in, because SMS_URL is the bank's real gateway even on dev machines.
   if (process.env.AFFILIATE_PAYOUT_SMS === 'true') {
@@ -509,6 +499,27 @@ export async function sendPayout(payoutId: string, options: { retry?: boolean; a
     );
   }
   return { status: 'SUCCESS', message: 'Paid.' };
+}
+
+/** After checking with the bank that a failed (or stuck) payout WAS paid: settle it with the bank's reference. */
+export async function confirmPayoutPaid(payoutId: string, user: { id: string }, bankReference: string) {
+  const now = new Date();
+  const payout = await prisma.affiliatePayout.findUnique({ where: { id: payoutId } });
+  const stuck = payout?.status === 'SENDING' && !!payout.lastAttemptAt && payout.lastAttemptAt < subMinutes(now, STALE_SENDING_MINUTES);
+  if (!payout || (payout.status !== 'FAILED' && !stuck)) throw new AffiliateError('Only a failed or stuck payout can be confirmed.', 409);
+  if (!payout.fundsReserved) {
+    // Failed before the account held it (older payouts): hold it now, or it can't be booked.
+    const held = await prisma.$transaction(async (tx) => {
+      if (!(await reserveFunds(tx, payout.netAmount))) return false;
+      await tx.affiliatePayout.update({ where: { id: payoutId }, data: { fundsReserved: true } });
+      return true;
+    });
+    if (!held) throw new AffiliateError(ACCOUNT_SHORT, 409);
+  }
+  const settled = await settlePayout(payout, { transactionId: bankReference.trim() }, ['FAILED', 'SENDING']);
+  if (!settled) throw new AffiliateError('This payout was already settled.', 409);
+  await refreshBatchStatus(payout.batchId);
+  await createAuditLog({ actorId: user.id, action: 'AFFILIATE_PAYOUT_CONFIRMED_PAID', entity: 'AffiliatePayout', entityId: payoutId, details: { bankReference } });
 }
 
 /** Sends every APPROVED payout (of one batch, or all). Never retries failures. */
@@ -525,8 +536,9 @@ export async function sendApprovedPayouts(batchId?: string) {
       if (outcome.status === 'SUCCESS') summary.sent++;
       else if (outcome.status === 'FAILED') summary.failed++;
       else summary.skipped++;
-      // Disbursements switched off: stop and leave the rest APPROVED for later.
-      if (outcome.status === 'SKIPPED' && outcome.message.startsWith('Disbursements')) break;
+      // Disbursements switched off or the affiliate account can't pay: stop and
+      // leave the rest APPROVED for later.
+      if (outcome.status === 'SKIPPED' && (outcome.message.startsWith('Disbursements') || outcome.message === ACCOUNT_SHORT)) break;
     } catch (error) {
       summary.failed++;
       logger.error(`[affiliate] payout ${p.id} failed: ${String(error)}`);
@@ -551,7 +563,13 @@ export async function releasePayout(payoutId: string, user: { id: string }) {
     });
     if (claim.count === 0) throw new AffiliateError('Only a failed payout can be released.', 409);
     await releaseCommissionsOfPayouts(tx, [payoutId]);
-    return tx.affiliatePayout.findUnique({ where: { id: payoutId }, select: { batchId: true } });
+    const released = await tx.affiliatePayout.findUnique({ where: { id: payoutId }, select: { batchId: true, netAmount: true, fundsReserved: true } });
+    // Its hold on the affiliate account goes back too.
+    if (released?.fundsReserved) {
+      await releaseFunds(tx, released.netAmount);
+      await tx.affiliatePayout.update({ where: { id: payoutId }, data: { fundsReserved: false } });
+    }
+    return released;
   });
   if (payout) await refreshBatchStatus(payout.batchId);
   await createAuditLog({ actorId: user.id, action: 'AFFILIATE_PAYOUT_RELEASED', entity: 'AffiliatePayout', entityId: payoutId });

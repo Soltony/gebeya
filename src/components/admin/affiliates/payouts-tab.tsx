@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, ChevronDown, ChevronUp, Loader2, RefreshCw, RotateCcw, Send, Undo2, Wallet, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   AlertDialog,
@@ -63,7 +64,7 @@ type PrepareResult = {
 
 type Confirm =
   | { action: 'SUBMIT' | 'CANCEL' | 'APPROVE_WITHDRAWAL' | 'DECLINE_WITHDRAWAL'; batch: Batch }
-  | { action: 'RETRY' | 'RELEASE'; payout: Payout };
+  | { action: 'RETRY' | 'RELEASE' | 'CONFIRM_PAID'; payout: Payout };
 
 type Kind = 'ALL' | 'BATCHES' | 'WITHDRAWALS';
 
@@ -160,7 +161,11 @@ export function PayoutsTab({
               batchId: confirm.batch.id,
               ...(confirm.action === 'DECLINE_WITHDRAWAL' ? { reason: declineReason.trim() } : {}),
             }
-          : { action: confirm.action, payoutId: confirm.payout.id };
+          : {
+              action: confirm.action,
+              payoutId: confirm.payout.id,
+              ...(confirm.action === 'CONFIRM_PAID' ? { bankReference: declineReason.trim() } : {}),
+            };
       const result = await apiRequest<{ status?: string; message?: string }>('/api/affiliates/payouts', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -170,6 +175,7 @@ export function PayoutsTab({
         CANCEL: 'Draft cancelled. Its commissions go into the next batch.',
         RETRY: result.message ?? 'Retry sent.',
         RELEASE: 'Released. Its commissions go into the next batch.',
+        CONFIRM_PAID: 'Settled as paid with the bank reference; the affiliate account is debited.',
         APPROVE_WITHDRAWAL: 'Approved. The money is being sent to the account shown.',
         DECLINE_WITHDRAWAL: 'Declined. Nothing was paid; the earnings are available again.',
       };
@@ -207,6 +213,12 @@ export function PayoutsTab({
           title: `Send ${money(confirm.payout.netAmount)} ETB again?`,
           body: 'Check with the bank first that the earlier attempt did not go through. If it did, retrying pays the affiliate twice.',
           action: 'I checked, send again',
+        };
+      case 'CONFIRM_PAID':
+        return {
+          title: `Confirm ${money(confirm.payout.netAmount)} ETB was paid?`,
+          body: 'Use this when the bank shows the transfer went through. Enter its FT number: the payout is marked paid and the affiliate account is debited.',
+          action: 'Confirm paid',
         };
       case 'RELEASE':
         return {
@@ -406,6 +418,9 @@ export function PayoutsTab({
                                     <Button size="sm" variant="outline" onClick={() => setConfirm({ action: 'RETRY', payout: p })}>
                                       <RotateCcw className="mr-1 h-4 w-4" /> Retry
                                     </Button>
+                                    <Button size="sm" variant="outline" onClick={() => { setDeclineReason(''); setConfirm({ action: 'CONFIRM_PAID', payout: p }); }}>
+                                      <Check className="mr-1 h-4 w-4" /> Paid
+                                    </Button>
                                     <Button size="sm" variant="ghost" onClick={() => setConfirm({ action: 'RELEASE', payout: p })}>
                                       <Undo2 className="mr-1 h-4 w-4" /> Release
                                     </Button>
@@ -431,6 +446,9 @@ export function PayoutsTab({
             <AlertDialogTitle>{confirmText.title}</AlertDialogTitle>
             <AlertDialogDescription>{confirmText.body}</AlertDialogDescription>
           </AlertDialogHeader>
+          {confirm?.action === 'CONFIRM_PAID' && (
+            <Input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="FT number from the bank" />
+          )}
           {confirm?.action === 'DECLINE_WITHDRAWAL' && (
             <Textarea
               value={declineReason}
@@ -446,7 +464,11 @@ export function PayoutsTab({
                 e.preventDefault();
                 void runConfirm();
               }}
-              disabled={busy || (confirm?.action === 'DECLINE_WITHDRAWAL' && declineReason.trim().length < 3)}
+              disabled={
+                busy ||
+                (confirm?.action === 'DECLINE_WITHDRAWAL' && declineReason.trim().length < 3) ||
+                (confirm?.action === 'CONFIRM_PAID' && declineReason.trim().length < 4)
+              }
             >
               {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {confirmText.action}

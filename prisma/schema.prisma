@@ -1513,6 +1513,104 @@ model AffiliatePointsSettingsVersion {
   publishedById String?
 }
 
+// The Affiliate Program's own bank account. Every affiliate transfer (shop,
+// loan repayment, withdrawal, payout) is paid from it. Like the provider
+// ledgers, the balance is stored and only changes together with an entry.
+model AffiliateAccount {
+  id            String                  @id // "AFFILIATE_PROGRAM": there is one account
+  name          String
+  // Core banking account number, for statements and reconciliation.
+  accountNumber String?
+  // Provider id the CBS transfer API debits for this account.
+  cbsProviderId String?
+  balance       Float                   @default(0)
+  // Held for transfers that are reserved or being sent; available = balance - reserved.
+  reserved      Float                   @default(0)
+  status        String                  @default("ACTIVE") // ACTIVE, FROZEN
+  frozenReason  String?                 @db.NVarChar(Max)
+  entries       AffiliateAccountEntry[]
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+}
+
+// The affiliate account's ledger: one row per movement, never edited.
+model AffiliateAccountEntry {
+  id                  String           @id @default(cuid())
+  accountId           String
+  account             AffiliateAccount @relation(fields: [accountId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // One row per business event (FUNDING:<changeId>, TRANSFER:<transferId>,
+  // PAYOUT:<payoutId>), so a retry never posts twice.
+  idempotencyKey      String           @unique
+  // Shown to admins, e.g. AFA-261028-7F3K9QAB.
+  reference           String           @unique
+  type                String // FUNDING, ADJUSTMENT, SHOP, REPAYMENT, WITHDRAWAL, PAYOUT
+  direction           String // CREDIT (into the account), DEBIT (out of it)
+  amount              Float // always positive
+  balanceAfter        Float
+  counterpartyAccount String?
+  // The bank's (FT) reference for the money movement.
+  bankReference       String?
+  transferId          String?
+  payoutId            String?
+  description         String           @db.NVarChar(Max)
+  createdById         String?
+  approvedById        String?
+  createdAt           DateTime         @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([type])
+  @@index([bankReference])
+}
+
+// One use of points: shop order, loan repayment or withdrawal. The points and
+// the Birr they buy are reserved first, the money is sent from the affiliate
+// account through CBS, then it is settled, or the points are returned.
+model AffiliateTransfer {
+  id                String    @id @default(cuid())
+  // Shown to the customer and in reports, e.g. AFT-261028-7F3K9QAB.
+  reference         String    @unique
+  // SHOP:<orderId>, or <purpose>:<phone>:<request id from the app>, so a
+  // repeated request never spends twice.
+  idempotencyKey    String    @unique
+  purpose           String // SHOP, REPAYMENT, WITHDRAWAL
+  // RESERVED, PENDING_REVIEW, SENDING, SUCCESS, FAILED, SENT_UNAPPLIED, CANCELLED
+  status            String
+  // Wallet owner: the person's phone (borrower id) when they asked.
+  phone             String
+  affiliateId       String?
+  points            Int
+  // ETB one point bought for this use.
+  pointValue        Float
+  // Birr sent from the affiliate account.
+  amount            Float
+  creditAccount     String
+  creditAccountName String?
+  orderId           String?
+  loanId            String?
+  paymentId         String?
+  journalEntryId    String?
+  cbsProviderId     String?
+  // The bank's (FT) reference once sent.
+  transactionId     String?
+  requestPayload    String?   @db.NVarChar(Max)
+  responsePayload   String?   @db.NVarChar(Max)
+  statusCode        Int?
+  errorMessage      String?   @db.NVarChar(Max)
+  attempts          Int       @default(0)
+  lastAttemptAt     DateTime?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  cancelReason      String?   @db.NVarChar(Max)
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([phone, purpose, createdAt])
+  @@index([status])
+  @@index([orderId])
+  @@index([loanId])
+}
+
 // Payouts that are approved together through maker-checker.
 model AffiliatePayoutBatch {
   id              String            @id @default(cuid())
@@ -1563,6 +1661,9 @@ model AffiliatePayout {
   attempts         Int                   @default(0)
   lastAttemptAt    DateTime?
   paidAt           DateTime?
+  // True while this payout holds funds on the affiliate account (from sending
+  // until it is paid or released).
+  fundsReserved    Boolean               @default(false)
   commissions      AffiliateCommission[]
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt

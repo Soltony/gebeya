@@ -85,7 +85,8 @@ export async function validateBorrowerEligibility(
   const activeOrder = await prisma.order.findFirst({
     where: {
       borrowerId,
-      paymentType: { not: 'DIRECT' },
+      // Direct and points orders are already paid for: no credit exposure.
+      paymentType: { notIn: ['DIRECT', 'POINTS'] },
       status: {
         in: includePending ? ['PENDING_MERCHANT_CONFIRMATION', 'ON_DELIVERY'] : ['ON_DELIVERY'],
       },

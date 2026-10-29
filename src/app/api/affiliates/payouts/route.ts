@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma';
 import {
   cancelDraftBatch,
   preparePayoutBatch,
+  confirmPayoutPaid,
   releasePayout,
   sendPayout,
   submitPayoutBatch,
@@ -52,6 +53,8 @@ const actionBody = z.discriminatedUnion('action', [
   z.object({ action: z.literal('CANCEL'), batchId: z.string().min(1) }),
   z.object({ action: z.literal('RETRY'), payoutId: z.string().min(1) }),
   z.object({ action: z.literal('RELEASE'), payoutId: z.string().min(1) }),
+  // The bank says a failed payout went through after all: settle it with its FT number.
+  z.object({ action: z.literal('CONFIRM_PAID'), payoutId: z.string().min(1), bankReference: z.string().trim().min(4).max(40) }),
   z.object({ action: z.literal('APPROVE_WITHDRAWAL'), batchId: z.string().min(1) }),
   z.object({
     action: z.literal('DECLINE_WITHDRAWAL'),
@@ -94,6 +97,9 @@ export async function POST(req: NextRequest) {
         if (outcome.status === 'SKIPPED') return NextResponse.json({ error: outcome.message }, { status: 409 });
         return NextResponse.json(outcome);
       }
+      case 'CONFIRM_PAID':
+        await confirmPayoutPaid(body.payoutId, auth.user, body.bankReference);
+        return NextResponse.json({ success: true });
       case 'RELEASE':
         await releasePayout(body.payoutId, auth.user);
         return NextResponse.json({ success: true });

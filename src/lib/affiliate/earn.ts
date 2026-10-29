@@ -17,8 +17,12 @@ import { getAsOfDate } from '@/lib/date-utils';
 import { SETTLED_STATUSES } from '@/lib/installment-status';
 import {
   AFFILIATE_TYPE_LABELS,
+  POINT_USES,
+  birrPerPoint,
   normalizeReferralCode,
   type AffiliateType,
+  type PointUse,
+  type PointsSettings,
   type ProgramConfig,
   type RewardType,
 } from './config';
@@ -41,6 +45,17 @@ import {
 import { chunk, isUniqueViolation } from './db';
 import { findAffiliateForPhones as findAffiliate, ownCommissions, ownPayouts, ownPoints } from './people';
 import { getPointsSettings } from './points';
+import { pointsUseOptions, type PointsUseOptions } from './transfers';
+
+const USE_WORDS: Record<PointUse, string> = { shop: 'shop', repayment: 'repay a loan', withdrawal: 'withdraw them as cash' };
+
+/** Under the points balance: what the points can be used for right now. */
+function pointsUseNote(settings: PointsSettings): string {
+  const uses = POINT_USES.filter((use) => settings[use].enabled).map((use) => USE_WORDS[use]);
+  if (!uses.length) return POINTS_USE_NOTE;
+  const list = uses.length === 1 ? uses[0] : `${uses.slice(0, -1).join(', ')} or ${uses[uses.length - 1]}`;
+  return `Use your points to ${list}.`;
+}
 import { AffiliateError, generateCode, getCurrentProgramVersion, loadProgramRuntimes, type ProgramRuntime } from './programs';
 import { acceptsCodes } from './referrals';
 import { getWithdrawalOffer, type WithdrawalOffer } from './withdrawals';
@@ -131,6 +146,8 @@ export type EarnOverview = {
   withdraw: WithdrawalOffer | null;
   /** The points wallet; null when the person has never been in a points program. */
   points: EarnPoints | null;
+  /** What points can be used for now; set with the wallet. */
+  pointsUse: PointsUseOptions | null;
   thisMonth: { earned: number; earnedPoints: number; friendsJoined: number };
   friends: { total: number; items: EarnFriend[] };
   earnings: EarnEarning[];
@@ -449,9 +466,10 @@ export async function getEarnOverview(borrowerId: string): Promise<EarnOverview>
           onHold: pendingPoints?._sum.points ?? 0,
           nextReleaseAt: pendingPoints?._min.holdUntil?.toISOString() ?? null,
           pointValue: pointsSettings.settings.pointValue,
-          note: POINTS_USE_NOTE,
+          note: pointsUseNote(pointsSettings.settings),
         }
       : null,
+    pointsUse: hasPoints ? await pointsUseOptions(borrowerId) : null,
     thisMonth: {
       earned: roundMoney(monthMoney?._sum.amount ?? 0),
       earnedPoints: monthPoints?._sum.points ?? 0,
@@ -477,20 +495,38 @@ export async function getEarnOverview(borrowerId: string): Promise<EarnOverview>
 }
 
 /** Whether to show the Earn link in the mini-app, and the balance for its badge. */
-export async function getEarnEntry(borrowerId: string): Promise<{ visible: boolean; available: number }> {
+export type EarnEntry = {
+  visible: boolean;
+  /** Money available to withdraw, for the badge. */
+  available: number;
+  /** Points balance, and what a point buys in the shop when paying with points is on. */
+  points: number;
+  shopPointValue: number | null;
+};
+
+/** Whether to show the Earn link in the mini-app, the balance for its badge, and points for the shop. */
+export async function getEarnEntry(borrowerId: string): Promise<EarnEntry> {
   const phones = await getPhoneNumbersForAccount(borrowerId);
   const affiliate = await findAffiliate(phones);
   const where = ownCommissions(affiliate?.id ?? null, phones);
-  const [payable, rewards] = await Promise.all([
+  const [payable, rewards, points, { settings }] = await Promise.all([
     prisma.affiliateCommission.aggregate({ where: { ...where, status: 'PAYABLE' }, _sum: { amount: true } }),
     affiliate ? Promise.resolve(1) : prisma.affiliateCommission.count({ where }),
+    prisma.affiliatePointTransaction.aggregate({ where: ownPoints(affiliate?.id ?? null, phones), _sum: { points: true } }),
+    getPointsSettings(),
   ]);
   let visible = !!affiliate || rewards > 0;
   if (!visible) {
     const signUp = signUpProgram(await loadProgramRuntimes());
     visible = !!signUp && isSignUpOpen(signUp);
   }
-  return { visible, available: roundMoney(payable._sum.amount ?? 0) };
+  const pointsBalance = points._sum.points ?? 0;
+  return {
+    visible: visible || pointsBalance > 0,
+    available: roundMoney(payable._sum.amount ?? 0),
+    points: pointsBalance,
+    shopPointValue: settings.shop.enabled ? birrPerPoint(settings, 'shop') : null,
+  };
 }
 
 /**

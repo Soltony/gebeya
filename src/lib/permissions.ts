@@ -50,6 +50,8 @@ const ENTITY_TO_MODULE: Record<string, string[]> = {
   affiliatepayoutbatch: ['affiliates'],
   affiliatepointssettings: ['affiliates'],
   affiliatepointadjustment: ['affiliates'],
+  affiliateaccount: ['affiliates'],
+  affiliateaccountmovement: ['affiliates'],
 };
 
 export function entityTypeToPermissionKeys(entityType: string) {

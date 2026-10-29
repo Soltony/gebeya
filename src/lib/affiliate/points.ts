@@ -15,14 +15,23 @@ import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { createAuditLog } from '@/lib/audit-log';
 import { getPhoneNumbersForAccount } from '@/lib/account-utils';
-import { DEFAULT_POINTS_SETTINGS, pointsSettingsSchema, type PointsSettings } from './config';
+import {
+  DEFAULT_POINTS_SETTINGS,
+  POINT_USES,
+  POINT_USE_LABELS,
+  birrPerPoint,
+  formatMoney,
+  pointsSettingsSchema,
+  type PointsSettings,
+} from './config';
 import { isUniqueViolation } from './db';
 import { roundMoney } from './engine';
 import { findAffiliateForPhones, ownPoints } from './people';
 import { AffiliateError, generateCode } from './programs';
 import { normalizePhone } from './schemas';
 
-export const POINT_TYPES = ['EARN', 'REVERSAL', 'ADJUST'] as const;
+// REDEEM: points used (shop, loan repayment, withdrawal); REFUND: a use called off.
+export const POINT_TYPES = ['EARN', 'REVERSAL', 'ADJUST', 'REDEEM', 'REFUND'] as const;
 export type PointType = (typeof POINT_TYPES)[number];
 
 /** The settings change request's entity id: one settings record, so one pending change at a time. */
@@ -84,7 +93,22 @@ export async function getPointsSettings(): Promise<PointsSettingsState> {
 
 export function describePointsSettings(settings: PointsSettings): string {
   const perBirr = Math.round((1 / settings.pointValue) * 100) / 100;
-  return `1 point is worth ${settings.pointValue} ETB (${perBirr} points = 1 ETB).`;
+  const uses = POINT_USES.map((use) => {
+    const s = settings[use];
+    if (!s.enabled) return `${POINT_USE_LABELS[use]}: off.`;
+    const parts = [`${birrPerPoint(settings, use)} ETB per point`, `from ${s.minPoints} points`];
+    if (s.maxPointsPerDay != null) parts.push(`max ${s.maxPointsPerDay} points a day`);
+    if (s.maxPointsPerMonth != null) parts.push(`max ${s.maxPointsPerMonth} points a month`);
+    if (use === 'withdrawal') {
+      parts.push(
+        settings.withdrawal.autoApproveUpTo > 0
+          ? `sent at once up to ${formatMoney(settings.withdrawal.autoApproveUpTo)}, larger ones checked`
+          : 'every withdrawal checked'
+      );
+    }
+    return `${POINT_USE_LABELS[use]}: on, ${parts.join(', ')}.`;
+  });
+  return [`1 point is worth ${settings.pointValue} ETB (${perBirr} points = 1 ETB).`, ...uses].join(' ');
 }
 
 /** A person's wallet: their phones (linked accounts included) and their affiliate, if any. */
@@ -189,6 +213,8 @@ export async function pointsSummary(pointValue: number) {
     earnedThisMonth: of('EARN'),
     takenBackThisMonth: -of('REVERSAL'),
     adjustedThisMonth: of('ADJUST'),
+    // Used net of uses called off.
+    usedThisMonth: -(of('REDEEM') + of('REFUND')),
   };
 }
 

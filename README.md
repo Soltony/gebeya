@@ -124,7 +124,7 @@ The project includes a worker script for handling scheduled tasks like automated
     npm run run:worker -- affiliate-commissions
     ```
 
-*   **To send affiliate payouts that were approved but not sent yet (failed payouts are never retried automatically):**
+*   **To send affiliate payouts and points payments that were approved but not sent yet (failed ones are never retried automatically):**
     ```bash
     npm run run:worker -- affiliate-payouts
     ```
@@ -136,12 +136,12 @@ The project includes a worker script for handling scheduled tasks like automated
 
 ### Affiliate Program
 
-Admins configure programs under **Admin → Affiliates** (grant the `affiliates` permission in Access Control). Programs, affiliates, resuming a paused program, reactivating an affiliate and every payout batch go through the Approvals page; pausing a program, suspending an affiliate and rejecting a referral take effect immediately because they can only reduce what is paid. Customers enter an affiliate's code in the mini-app. On the mini-app's **Earn** page (`/earn`), affiliates (customers and agents) see their code, invited friends and earnings, and, when a program has customer sign-up on, customers can get their own code without per-customer approval. When a program allows withdrawals, people withdraw their available earnings there to their own account; amounts above the program's automatic limit wait in Affiliates → Payouts for a checker (Update on Approvals). A program can pay rewards as points instead of money: they go to the person's points wallet (Affiliates → Points for settings, adjustments and history); ways to use points come later. Approved payouts are sent through the same CBS credit endpoint as disbursements and respect the disbursement kill switch.
+Admins configure programs under **Admin → Affiliates** (grant the `affiliates` permission in Access Control). Programs, affiliates, resuming a paused program, reactivating an affiliate and every payout batch go through the Approvals page; pausing a program, suspending an affiliate and rejecting a referral take effect immediately because they can only reduce what is paid. Customers enter an affiliate's code in the mini-app. On the mini-app's **Earn** page (`/earn`), affiliates (customers and agents) see their code, invited friends and earnings, and, when a program has customer sign-up on, customers can get their own code without per-customer approval. When a program allows withdrawals, people withdraw their available earnings there to their own account; amounts above the program's automatic limit wait in Affiliates → Payouts for a checker (Update on Approvals). A program can pay rewards as points instead of money: they go to the person's points wallet (Affiliates → Points for settings, adjustments and history), and people spend them in the shop, on a loan repayment or as a withdrawal once each use is switched on in the points settings. Every affiliate payment (points uses and money payouts) is paid from the Affiliate Program account (Affiliates → Account), which must be funded at the bank and the funding recorded there with its FT number. Payments are sent through the same CBS credit endpoint as disbursements and respect the disbursement kill switch. See [docs/affiliate-program-manual.md](docs/affiliate-program-manual.md).
 
 ```env
 # Optional overrides for affiliate payouts (default to the disbursement settings)
 AFFILIATE_PAYOUT_URL="..."            # defaults to EXTERNAL_DISBURSEMENT_URL
-AFFILIATE_PAYOUT_PROVIDER_ID="..."    # defaults to FORCE_PROVIDER_ID, then PRO0002
+AFFILIATE_PAYOUT_PROVIDER_ID="..."    # CBS provider id of the Affiliate Program account, unless set on Affiliates → Account; defaults to FORCE_PROVIDER_ID, then PRO0002
 AFFILIATE_JOB_INTERVAL_MINUTES=1440
 AFFILIATE_PAYOUT_SMS=false            # true texts people when a payout/withdrawal is paid (uses SMS_URL)
 ```

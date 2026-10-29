@@ -62,6 +62,14 @@ const statusColor: Record<string, string> = {
   CANCELLED: 'bg-red-100 text-red-800 border-red-300',
 };
 
+const paymentTypeLabel = (type: string) => (type === 'DIRECT' ? 'Direct Payment' : type === 'POINTS' ? 'Points' : 'BNPL');
+const paymentTypeStyle = (type: string) =>
+  type === 'DIRECT'
+    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+    : type === 'POINTS'
+      ? 'bg-violet-100 text-violet-800 border-violet-300'
+      : 'bg-amber-100 text-amber-800 border-amber-300';
+
 import { Suspense } from 'react';
 
 function BnplOrdersPageInner() {
@@ -177,6 +185,13 @@ function BnplOrdersPageInner() {
     setDeliveryOrderId(orderId);
     setAgreementAccepted(false);
     setOtpCode('');
+
+    // Points orders have no loan, so no agreement: straight to the delivery code.
+    if (order.paymentType === 'POINTS') {
+      await sendDeliveryOtp(orderId);
+      return;
+    }
+
     setLoadingAgreement(true);
     setDeliveryStep('agreement');
 
@@ -239,6 +254,23 @@ function BnplOrdersPageInner() {
     if (!deliveryOrderId || !otpCode) return;
     setOtpVerifying(true);
     try {
+      // Points orders: the code, the delivery and the merchant's payment are
+      // confirmed together by the Earn API, for the logged-in customer only.
+      if (orders.find((o) => o.id === deliveryOrderId)?.paymentType === 'POINTS') {
+        const res = await fetch('/api/earn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'CONFIRM_POINTS_DELIVERY', orderId: deliveryOrderId, code: otpCode }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Invalid or expired code');
+        }
+        toast({ title: 'Delivery confirmed', description: 'Your order is delivered and paid with your points.' });
+        closeDeliveryDialog();
+        load();
+        return;
+      }
       const verifyRes = await fetch('/api/delivery-otp', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -411,8 +443,8 @@ function BnplOrdersPageInner() {
                 )}
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold truncate">{firstItem.name}</p>
-                  <Badge className={o.paymentType === 'DIRECT' ? 'bg-emerald-100 text-emerald-800 border-emerald-300 text-[10px]' : 'bg-amber-100 text-amber-800 border-amber-300 text-[10px]'} variant="outline">
-                    {o.paymentType === 'DIRECT' ? 'Direct Payment' : 'BNPL'}
+                  <Badge className={`${paymentTypeStyle(o.paymentType)} text-[10px]`} variant="outline">
+                    {paymentTypeLabel(o.paymentType)}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
@@ -430,8 +462,8 @@ function BnplOrdersPageInner() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Payment Type</span>
-                      <Badge className={o.paymentType === 'DIRECT' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-amber-100 text-amber-800 border-amber-300'} variant="outline">
-                        {o.paymentType === 'DIRECT' ? 'Direct Payment' : 'BNPL'}
+                      <Badge className={paymentTypeStyle(o.paymentType)} variant="outline">
+                        {paymentTypeLabel(o.paymentType)}
                       </Badge>
                     </div>
                     <div className="flex justify-between">

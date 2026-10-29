@@ -34,6 +34,7 @@ import { customCodeProblem, type EarningState, type PaymentState } from '@/lib/a
 import type { EarnEarning, EarnOverview, EarnPayment, FriendProgress } from '@/lib/affiliate/earn';
 import type { WithdrawalOffer } from '@/lib/affiliate/withdrawals';
 import { cn } from '@/lib/utils';
+import { PointPayments, PointsActions } from './points-actions';
 
 async function callEarnApi<T>(init?: RequestInit): Promise<T> {
   const res = await fetch('/api/earn', {
@@ -429,7 +430,8 @@ export function EarnClient({ borrowerId }: { borrowerId: string }) {
   const showPoints = !!wallet && (!!affiliate || hasRewards || wallet.balance !== 0);
   const showMoney = !!data?.showMoney && (!!affiliate || hasRewards);
   const pointsProgram = program?.rewardType === 'POINTS';
-  const tabCount = (affiliate ? 1 : 0) + 1 + (showMoney ? 1 : 0);
+  const showUsed = !!data?.pointsUse && (data.pointsUse.transfers.length > 0 || showPoints);
+  const tabCount = (affiliate ? 1 : 0) + 1 + (showMoney ? 1 : 0) + (showUsed ? 1 : 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100/80">
@@ -573,6 +575,9 @@ export function EarnClient({ borrowerId }: { borrowerId: string }) {
                     )}
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">{wallet.note}</p>
+                  {data.pointsUse && !affiliate?.suspended && (
+                    <PointsActions options={data.pointsUse} balance={wallet.balance} borrowerId={borrowerId} onDone={() => void load()} />
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -674,11 +679,23 @@ export function EarnClient({ borrowerId }: { borrowerId: string }) {
 
             {(affiliate || hasRewards) && (
               <Tabs defaultValue={affiliate ? 'friends' : 'earnings'}>
-                <TabsList className={cn('grid w-full', tabCount === 3 ? 'grid-cols-3' : tabCount === 2 ? 'grid-cols-2' : 'grid-cols-1')}>
+                <TabsList
+                  className={cn(
+                    'grid w-full',
+                    tabCount === 4 ? 'grid-cols-4' : tabCount === 3 ? 'grid-cols-3' : tabCount === 2 ? 'grid-cols-2' : 'grid-cols-1'
+                  )}
+                >
                   {affiliate && <TabsTrigger value="friends">Friends ({data.friends.total})</TabsTrigger>}
                   <TabsTrigger value="earnings">{pointsProgram ? 'History' : 'Earnings'}</TabsTrigger>
+                  {showUsed && <TabsTrigger value="used">Used</TabsTrigger>}
                   {showMoney && <TabsTrigger value="payments">Payments</TabsTrigger>}
                 </TabsList>
+
+                {showUsed && data.pointsUse && (
+                  <TabsContent value="used">
+                    <PointPayments transfers={data.pointsUse.transfers} />
+                  </TabsContent>
+                )}
 
                 {affiliate && (
                   <TabsContent value="friends" className="space-y-2">

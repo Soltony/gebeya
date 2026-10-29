@@ -7,6 +7,7 @@ import { AffiliatesTab } from './affiliates-tab';
 import { CommissionsTab } from './commissions-tab';
 import { PayoutsTab } from './payouts-tab';
 import { PointsTab } from './points-tab';
+import { AccountTab } from './account-tab';
 import { ProgramsTab } from './programs-tab';
 import { ReferralsTab } from './referrals-tab';
 import { ReportsTab } from './reports-tab';
@@ -36,6 +37,7 @@ export function AffiliatesClient() {
           <TabsTrigger value="commissions">Commissions</TabsTrigger>
           <TabsTrigger value="payouts">Payouts</TabsTrigger>
           <TabsTrigger value="points">Points</TabsTrigger>
+          <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="reports">Reports</TabsTrigger>
         </TabsList>
 
@@ -56,6 +58,9 @@ export function AffiliatesClient() {
         </TabsContent>
         <TabsContent value="points" className="pt-4">
           <PointsTab canUpdate={canUpdate} />
+        </TabsContent>
+        <TabsContent value="account" className="pt-4">
+          <AccountTab canUpdate={canUpdate} canReview={canReview} />
         </TabsContent>
         <TabsContent value="reports" className="pt-4">
           <ReportsTab options={options} />

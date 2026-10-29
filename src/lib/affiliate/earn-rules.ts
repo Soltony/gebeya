@@ -12,6 +12,8 @@ import {
   pointsForAmount,
   type CommissionEvent,
   type CommissionRule,
+  type PointUse,
+  type PointsSettings,
   type ProgramConfig,
 } from './config';
 import { roundMoney } from './engine';
@@ -204,6 +206,42 @@ export function selectForWithdrawal<T extends { amount: number; eventDate: Date 
 }
 
 // ---------------------------------------------------------------------------
+// Using points
+// ---------------------------------------------------------------------------
+
+/** Birr that `points` buy at `rate` ETB per point. */
+export function birrForPoints(points: number, rate: number): number {
+  return roundMoney(points * rate);
+}
+
+/** Whole points needed to pay `birr` at `rate` ETB per point (rounded up, never short). */
+export function pointsNeeded(birr: number, rate: number): number {
+  return Math.ceil(birr / rate - 1e-9);
+}
+
+export type PointsUseSettings = PointsSettings[PointUse];
+
+/** Why `points` can't be used now, in customer words, or null when they can. */
+export function pointsUseProblem(
+  use: PointsUseSettings,
+  input: { points: number; balance: number; usedToday: number; usedThisMonth: number }
+): string | null {
+  if (!use.enabled) return 'This is not available right now.';
+  if (!Number.isInteger(input.points) || input.points <= 0) return 'Enter a whole number of points.';
+  if (input.points < use.minPoints) return `Use at least ${formatPoints(use.minPoints)}.`;
+  if (input.points > input.balance) return `You only have ${formatPoints(Math.max(0, input.balance))}.`;
+  if (use.maxPointsPerDay != null && input.usedToday + input.points > use.maxPointsPerDay) {
+    const left = use.maxPointsPerDay - input.usedToday;
+    return left > 0 ? `You can use up to ${formatPoints(left)} more today.` : "You reached today's limit. Please try again tomorrow.";
+  }
+  if (use.maxPointsPerMonth != null && input.usedThisMonth + input.points > use.maxPointsPerMonth) {
+    const left = use.maxPointsPerMonth - input.usedThisMonth;
+    return left > 0 ? `You can use up to ${formatPoints(left)} more this month.` : "You reached this month's limit.";
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // The program in customer words
 // ---------------------------------------------------------------------------
 
@@ -291,8 +329,11 @@ export type CustomerProgramText = {
   lines: string[];
 };
 
-/** The note under the balance for points programs, until points can be used. */
+/** Under the balance when no way to use points is switched on yet. */
 export const POINTS_USE_NOTE = 'Your points are kept in your points wallet. Ways to use them are coming soon.';
+
+/** The "How it works" line of a points program; what points buy is set separately. */
+export const POINTS_WALLET_NOTE = 'Your points are kept in your points wallet on the Earn page, with the ways you can use them.';
 
 export function describeProgramForAffiliate(config: ProgramConfig): CustomerProgramText {
   const reward = config.reward;
@@ -312,7 +353,7 @@ export function describeProgramForAffiliate(config: ProgramConfig): CustomerProg
   const minimum = config.payout.minimumAmount > 0 ? ` once they reach ${formatMoney(config.payout.minimumAmount)}` : '';
   const withdraw = config.withdraw;
   const payoutNote = points
-    ? POINTS_USE_NOTE
+    ? POINTS_WALLET_NOTE
     : withdraw.enabled
       ? `Withdraw your available earnings to your account any time, from ${formatMoney(withdraw.minimum)}.`
       : `Available earnings are paid to your account ${scheduled ?? 'from time to time'}${minimum}.`;

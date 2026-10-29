@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger';
 import { applyAffiliateChange, applyProgramChange } from './programs';
 import { approvePayoutBatch, rejectPayoutBatch, sendApprovedPayouts } from './payouts';
 import { applyPointAdjustment, applyPointsSettingsChange } from './points';
+import { applyAccountChange, applyAccountMovement } from './account';
 
 export const AFFILIATE_ENTITY_TYPES = [
   'AffiliateProgram',
@@ -13,6 +14,8 @@ export const AFFILIATE_ENTITY_TYPES = [
   'AffiliatePayoutBatch',
   'AffiliatePointsSettings',
   'AffiliatePointAdjustment',
+  'AffiliateAccount',
+  'AffiliateAccountMovement',
 ] as const;
 
 export function isAffiliateEntityType(entityType: string): boolean {
@@ -52,6 +55,12 @@ export async function applyAffiliateApproval(change: Change, context?: { actorId
       return;
     case 'AffiliatePointAdjustment':
       await applyPointAdjustment(change, context?.actorId);
+      return;
+    case 'AffiliateAccount':
+      await applyAccountChange(change, context?.actorId);
+      return;
+    case 'AffiliateAccountMovement':
+      await applyAccountMovement(change, context?.actorId);
       return;
     default:
       throw new Error(`Unknown affiliate entity type: ${change.entityType}`);

@@ -230,6 +230,10 @@ async function runAffiliateServiceLoop() {
       // (e.g. disbursements were switched off). Failed payouts are never retried here.
       const { sendApprovedPayouts } = await import('./lib/affiliate/payouts');
       await sendApprovedPayouts();
+      // Points: return the points of cancelled shop orders and send approved
+      // transfers left waiting. Failed transfers are never retried here either.
+      const { runTransferSweep } = await import('./lib/affiliate/transfers');
+      await runTransferSweep();
     } catch (error) {
       console.error(`[${new Date().toISOString()}] Error during affiliate commission cycle:`, error);
       logger.error(`Error during affiliate commission cycle: ${String(error)}`);
@@ -362,6 +366,8 @@ async function main() {
           const { sendApprovedPayouts } = await import('./lib/affiliate/payouts');
           const result = await sendApprovedPayouts();
           console.log('Affiliate payouts:', result);
+          const { runTransferSweep } = await import('./lib/affiliate/transfers');
+          console.log('Points transfers:', await runTransferSweep());
         }
         process.exit(0);
         break;

@@ -384,6 +384,13 @@ const PATH_LABELS: Record<string, string> = {
   reward: 'Rewards',
   pointsPerBirr: 'Points per 1 ETB',
   pointValue: 'Value of 1 point',
+  shop: 'Shop',
+  repayment: 'Loan repayment',
+  withdrawal: 'Withdrawal',
+  birrPerPoint: 'ETB per point',
+  minPoints: 'Minimum points',
+  maxPointsPerDay: 'Max points per day',
+  maxPointsPerMonth: 'Max points per month',
   withdraw: 'Withdrawals',
   minimum: 'Minimum withdrawal',
   maxPerDay: 'Max per day',
@@ -459,15 +466,54 @@ export function pointsForAmount(amount: number, pointsPerBirr: number): number {
 // maker-checker; how points can be used will be added here later.
 // ---------------------------------------------------------------------------
 
-export const pointsSettingsSchema = z.object({
-  // Shown to people next to their balance ("≈ 245 ETB") and used to value
-  // points in reports.
-  pointValue: z.number({ invalid_type_error: 'Enter a number' }).finite().positive('Must be more than 0').max(1000).default(0.1),
+export const POINT_USES = ['shop', 'repayment', 'withdrawal'] as const;
+export type PointUse = (typeof POINT_USES)[number];
+
+export const POINT_USE_LABELS: Record<PointUse, string> = {
+  shop: 'Shop',
+  repayment: 'Loan repayment',
+  withdrawal: 'Withdrawal',
+};
+
+const pointsUseSchema = z.object({
+  enabled: z.boolean().default(false),
+  // ETB one point buys for this use; empty = the point value.
+  birrPerPoint: z.number({ invalid_type_error: 'Enter a number' }).finite().positive('Must be more than 0').max(1000).nullable().default(null),
+  minPoints: z.number().int().min(1).max(10_000_000).default(100),
+  maxPointsPerDay: z.number().int().positive().max(1_000_000_000).nullable().default(null),
+  maxPointsPerMonth: z.number().int().positive().max(1_000_000_000).nullable().default(null),
 });
+
+export const pointsSettingsSchema = z
+  .object({
+    // Shown to people next to their balance ("≈ 245 ETB") and used to value
+    // points in reports, and what a point buys when a use has no rate of its own.
+    pointValue: z.number({ invalid_type_error: 'Enter a number' }).finite().positive('Must be more than 0').max(1000).default(0.1),
+    shop: pointsUseSchema.default({}),
+    repayment: pointsUseSchema.default({}),
+    // Withdrawals up to autoApproveUpTo ETB are sent at once; larger ones wait for a checker.
+    withdrawal: pointsUseSchema.extend({ autoApproveUpTo: money.default(0) }).default({}),
+  })
+  .superRefine((settings, ctx) => {
+    for (const use of POINT_USES) {
+      const s = settings[use];
+      if (s.maxPointsPerDay != null && s.maxPointsPerDay < s.minPoints) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [use, 'maxPointsPerDay'], message: 'Must be at least the minimum points' });
+      }
+      if (s.maxPointsPerMonth != null && s.maxPointsPerMonth < (s.maxPointsPerDay ?? s.minPoints)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [use, 'maxPointsPerMonth'], message: 'Must be at least the daily maximum' });
+      }
+    }
+  });
 
 export type PointsSettings = z.infer<typeof pointsSettingsSchema>;
 
-export const DEFAULT_POINTS_SETTINGS: PointsSettings = { pointValue: 0.1 };
+export const DEFAULT_POINTS_SETTINGS: PointsSettings = pointsSettingsSchema.parse({});
+
+/** ETB one point buys for a use: its own rate, or the point value. */
+export function birrPerPoint(settings: PointsSettings, use: PointUse): number {
+  return settings[use].birrPerPoint ?? settings.pointValue;
+}
 
 type NameLookup = Record<string, string | undefined>;
 

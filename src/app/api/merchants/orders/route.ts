@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/user';
 import { createAuditLog } from '@/lib/audit-log';
 import { notifyTelegramOrderUpdate } from '@/lib/telegram/notifications';
+import { releasePointsOrder } from '@/lib/affiliate/transfers';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -163,6 +164,12 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Cannot cancel a delivered order' }, { status: 400 });
     }
 
+    // Points orders pay the merchant from the affiliate account, so only the
+    // customer's delivery code can complete them.
+    if (status === 'DELIVERED' && order.paymentType === 'POINTS') {
+      return NextResponse.json({ error: 'The customer confirms points orders with their delivery code.' }, { status: 400 });
+    }
+
     const updateData: any = { status };
     if (status === 'CANCELLED') {
       updateData.cancelReason = cancelReason || 'Item not available';
@@ -181,6 +188,14 @@ export async function PUT(req: NextRequest) {
         where: { id: order.loanApplicationId },
         data: { status: 'CANCELLED' },
       }).catch(() => {});
+    }
+
+    // A cancelled points order gives the customer's points back (the worker
+    // sweep catches it if this fails).
+    if (status === 'CANCELLED' && order.paymentType === 'POINTS') {
+      await releasePointsOrder(id, updateData.cancelReason, user.id).catch((e) =>
+        console.error('Failed to return points of cancelled order:', e)
+      );
     }
 
     await createAuditLog({ actorId: user.id, action: 'UPDATE_ORDER_STATUS', entity: 'Order', entityId: id, details: JSON.stringify({ status, cancelReason }) });
